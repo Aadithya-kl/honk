@@ -5,7 +5,7 @@ import { sameNick, STATUS_BUFFER } from "../irc/names.ts";
 import { nickColor, theme } from "../theme.ts";
 import type { BufferState, ChatMessage, ServerState } from "../types.ts";
 import { getCompletions } from "./completion.ts";
-import { scrollboxStyle, truncate } from "./display.ts";
+import { HEADER_HEIGHT, scrollboxStyle, truncate } from "./display.ts";
 import { FormattedText } from "./format.tsx";
 
 interface ChatPaneProps {
@@ -218,7 +218,13 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
   });
 
   const title = buffer ? buffer.name : STATUS_BUFFER;
-  const topic = buffer?.topic ?? "";
+  // Cut at the end to fit beside the title and the user count (2 + 2 padding,
+  // " — ", and the count with its margin). Formatting codes count as characters,
+  // so a coloured topic may be cut a little early.
+  const usersText = buffer?.kind === "channel" ? `${buffer.users.length} users` : "";
+  const topicRoom =
+    paneWidth - 4 - (buffer?.name ?? STATUS_BUFFER).length - 3 - (usersText ? usersText.length + 2 : 0);
+  const topic = topicRoom >= 4 ? truncate(buffer?.topic ?? "", topicRoom) : "";
   const promptLabel = server
     ? `${server.name}/${title}`
     : title;
@@ -255,14 +261,16 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
     >
       {/* Top topic header */}
       <box
-        height={1}
+        height={HEADER_HEIGHT}
+        paddingTop={1}
+        paddingBottom={1}
         paddingLeft={2}
         paddingRight={2}
-        backgroundColor={theme.bgHeader}
+        backgroundColor={theme.bgBase}
         flexDirection="row"
         justifyContent="space-between"
       >
-        <text>
+        <text flexShrink={1} wrapMode="none">
           <span fg={theme.accent}>
             <strong>{title}</strong>
           </span>
@@ -274,7 +282,9 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
           ) : null}
         </text>
         {buffer?.kind === "channel" && (
-          <text fg={theme.fgMuted}>{buffer.users.length} users</text>
+          <text fg={theme.fgMuted} flexShrink={0} marginLeft={2}>
+            {usersText}
+          </text>
         )}
       </box>
 
@@ -286,7 +296,8 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
         scrollX={false}
         style={scrollboxStyle(theme.bgBase)}
       >
-        <box flexDirection="column" paddingTop={1} paddingBottom={1}>
+        {/* No top padding: the header's own bottom padding is the gap. */}
+        <box flexDirection="column" paddingBottom={1}>
           {buffer?.messages.map((msg, idx) => {
             const showDivider = msg.id === buffer.firstUnreadId;
             const prev = idx > 0 ? buffer.messages[idx - 1] : undefined;

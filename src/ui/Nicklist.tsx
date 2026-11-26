@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { nickColor, prefixColor, theme } from "../theme.ts";
 import type { BufferState } from "../types.ts";
-import { scrollboxStyle, truncate } from "./display.ts";
+import { HEADER_HEIGHT, scrollboxStyle, truncate } from "./display.ts";
 
 interface NicklistProps {
   users: BufferState["users"];
@@ -25,10 +25,12 @@ export const Nicklist = memo(function Nicklist({
       backgroundColor={theme.bgNicklist}
     >
       <box
-        height={1}
+        height={HEADER_HEIGHT}
+        paddingTop={1}
+        paddingBottom={1}
         paddingLeft={2}
         paddingRight={1}
-        backgroundColor={theme.bgHeader}
+        backgroundColor={theme.bgNicklist}
       >
         <text fg={theme.fgMuted}>
           <strong>USERS ({users.length})</strong>
@@ -40,7 +42,7 @@ export const Nicklist = memo(function Nicklist({
         scrollX={false}
         style={scrollboxStyle(theme.bgNicklist)}
       >
-        <box flexDirection="column" paddingTop={1} paddingBottom={1}>
+        <box flexDirection="column" paddingBottom={1}>
           {users.length === 0 ? (
             <box paddingLeft={2}>
               <text fg={theme.fgDim}>No users</text>

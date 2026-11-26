@@ -7,6 +7,7 @@ import {
   statusIndicator,
   truncate,
   unreadBadge,
+  HEADER_HEIGHT,
 } from "./display.ts";
 
 interface SidebarProps {
@@ -30,11 +31,12 @@ export function Sidebar({
       backgroundColor={theme.bgSidebar}
     >
       <box
-        height={1}
+        height={HEADER_HEIGHT}
+        paddingTop={1}
+        paddingBottom={1}
         paddingLeft={2}
         paddingRight={1}
-        backgroundColor={theme.bgHeader}
-        alignItems="center"
+        backgroundColor={theme.bgSidebar}
       >
         <text fg={theme.fgMuted}>
           <strong>SERVERS</strong>
@@ -46,10 +48,11 @@ export function Sidebar({
         scrollX={false}
         style={scrollboxStyle(theme.bgSidebar)}
       >
-        {servers.map((server) => {
+        {servers.map((server, i) => {
           const st = statusIndicator(server.status);
           return (
-            <box key={server.id} flexDirection="column" marginTop={1}>
+            // The header's bottom padding already spaces the first server; later ones get a gap.
+            <box key={server.id} flexDirection="column" marginTop={i === 0 ? 0 : 1}>
               {/* Server header */}
               <box
                 height={1}

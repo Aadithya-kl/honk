@@ -1,6 +1,12 @@
 import { theme } from "../theme.ts";
 import type { BufferState, ConnectionStatus } from "../types.ts";
 
+/**
+ * Rows of the three top headers (sidebar, chat, user list). They must match so the
+ * headers line up as one bar: a row of padding, the text, a row of padding.
+ */
+export const HEADER_HEIGHT = 3;
+
 export function truncate(str: string, max: number): string {
   return str.length > max ? `${str.slice(0, max - 1)}…` : str;
 }
