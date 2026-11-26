@@ -12,7 +12,9 @@ curl -fsSL https://agustingianni.github.io/honk/install.sh | sh
 
 The [script](site/install.sh) picks the binary for your OS and CPU, checks its
 SHA-256 checksum, and puts it in `~/.local/bin`. It never uses sudo and never
-edits your shell config. Settings:
+edits your shell config. It also writes a small file,
+`~/.local/state/honk/receipt.json`, that records where it put honk, so that a
+later `honk upgrade` only replaces a copy this script installed. Settings:
 
 - `HONK_VERSION=v0.1.0` installs that release instead of the latest one.
 - `HONK_INSTALL_DIR=~/bin` installs into another folder.

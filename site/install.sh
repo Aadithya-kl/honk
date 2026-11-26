@@ -19,6 +19,10 @@
 #      this repo.
 #   4. Moves the binary to ~/.local/bin/honk. It never uses sudo and never edits
 #      your shell config files.
+#   5. Writes an install receipt to ~/.local/state/honk/receipt.json (or under
+#      $XDG_STATE_HOME). It records where this script put honk, so that
+#      `honk upgrade` only replaces a copy that this script installed, and never
+#      one that Homebrew or another package manager owns.
 #
 # All the code is inside main(), which only runs on the last line. If the
 # download stops halfway, the shell never reaches that line, so nothing runs.
@@ -150,6 +154,37 @@ print_path_help() { # print_path_help <dir>
 	say "Then open a new terminal."
 }
 
+json_string() { # json_string <text>: prints <text> as a quoted JSON string
+	# Escape backslashes first, then double quotes. A path with a newline or
+	# another control character would still break the JSON; we do not expect one.
+	printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+}
+
+# Records where this script installed honk. `honk upgrade` reads it and only
+# replaces the binary at this path. The path has its symlinks resolved, because
+# honk compares it with the real path of the running binary.
+write_receipt() { # write_receipt <real install dir> <target>
+	state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/honk"
+	receipt="$state_dir/receipt.json"
+	if ! mkdir -p "$state_dir" 2>/dev/null; then
+		say "warning: could not create $state_dir, so honk upgrade will not work"
+		return 0
+	fi
+	# Write next to the receipt, then rename, so a reader never sees half a file.
+	if {
+		printf '{\n'
+		printf '  "installer": "install.sh",\n'
+		printf '  "path": %s,\n' "$(json_string "$1/honk")"
+		printf '  "target": %s,\n' "$(json_string "$2")"
+		printf '  "installedAt": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		printf '}\n'
+	} 2>/dev/null >"$receipt.new" && mv -f "$receipt.new" "$receipt"; then
+		return 0
+	fi
+	rm -f "$receipt.new"
+	say "warning: could not write $receipt, so honk upgrade will not work"
+}
+
 main() {
 	target=$(detect_target)
 	case "$target" in
@@ -202,6 +237,7 @@ main() {
 	cp "$tmp/$binary" "$install_dir/.honk.new"
 	mv -f "$install_dir/.honk.new" "$install_dir/honk"
 	say "installed $install_dir/honk"
+	write_receipt "$(cd "$install_dir" && pwd -P)" "$target"
 
 	case ":$PATH:" in
 	*":$install_dir:"*) ;;
