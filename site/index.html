@@ -4,11 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>honk - a terminal IRC client</title>
-<meta name="description" content="honk is a fast, keyboard-driven IRC client for the terminal. One file to install, for macOS and Linux.">
+<meta name="description" content="honk is an IRC client for your terminal, built around the keyboard. One file to install, for macOS and Linux.">
 <meta property="og:title" content="honk - a terminal IRC client">
-<meta property="og:description" content="A fast, keyboard-driven IRC client for the terminal. One file to install, for macOS and Linux.">
+<meta property="og:description" content="An IRC client for your terminal, built around the keyboard. One file to install, for macOS and Linux.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://agustingianni.github.io/honk/">
+<!-- The preview image chat apps show when someone pastes the link. It must be an absolute URL. -->
+<meta property="og:image" content="https://agustingianni.github.io/honk/demo.png">
+<meta property="og:image:width" content="1400">
+<meta property="og:image:height" content="820">
+<meta property="og:image:alt" content="honk showing the #honk channel, a list of servers and channels, and a user list">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231a1b26'/%3E%3Ctext x='16' y='23' font-family='monospace' font-size='20' font-weight='700' text-anchor='middle' fill='%237aa2f7'%3Eh%3C/text%3E%3C/svg%3E">
 <style>
@@ -20,7 +26,7 @@
     --line: #3b4261;
     --fg: #c0caf5;
     --fg-bright: #e2e8ff;
-    --fg-muted: #737aa2;
+    --fg-muted: #868db4; /* 5.3:1 on --bg, 4.8:1 on --surface: passes WCAG AA */
     --accent: #7aa2f7;
     --accent-alt: #bb9af7;
     --green: #9ece6a;
@@ -60,6 +66,8 @@
   }
   h2::before { content: "# "; color: var(--fg-muted); }
   p { margin: 0 0 1rem; }
+  /* About 70 characters per line, a comfortable length for reading. */
+  p, ul.features { max-width: 70ch; }
   a { color: var(--accent); text-underline-offset: 3px; }
   a:hover { color: var(--fg-bright); }
   code {
@@ -97,6 +105,7 @@
   .install button:hover { color: var(--fg-bright); background: var(--line); }
   .install button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .note {
+    max-width: 82ch; /* smaller text, so more characters fit the same line width */
     margin-top: 0.75rem;
     font-size: 0.85rem;
     color: var(--fg-muted);
@@ -120,6 +129,25 @@
     left: 0;
     color: var(--green);
   }
+
+  ul.not-yet {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-width: 70ch;
+  }
+  ul.not-yet li {
+    position: relative;
+    padding-left: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+  ul.not-yet li::before {
+    content: "-";
+    position: absolute;
+    left: 0;
+    color: var(--fg-muted);
+  }
+  ul.not-yet .why { color: var(--fg-muted); }
 
   table.keys {
     border-collapse: collapse;
@@ -186,7 +214,7 @@
 <body>
 <main>
   <h1><span class="prompt">&gt;</span> honk</h1>
-  <p class="tagline">A fast, keyboard-driven IRC client for your terminal.</p>
+  <p class="tagline">An IRC client for your terminal, built around the keyboard.</p>
 
   <div class="install">
     <pre id="cmd">curl -fsSL https://agustingianni.github.io/honk/install.sh | sh</pre>
@@ -198,6 +226,8 @@
     <code>~/.local/bin</code>, without sudo.
     <a href="https://github.com/agustingianni/honk/blob/main/site/install.sh">Read the script</a> or
     <a href="https://github.com/agustingianni/honk/releases/latest">download a binary yourself</a>.
+    Every release is built by GitHub Actions and signed, so you can
+    <a href="https://github.com/agustingianni/honk#check-a-download">check where it came from</a>.
   </p>
 
   <figure class="demo">
@@ -228,11 +258,11 @@
 
   <h2>What you get</h2>
   <ul class="features">
-    <li>An omnibox: press <kbd>Ctrl</kbd>+<kbd>K</kbd> and type to jump to any channel, DM or person, or to run a command.</li>
-    <li>Several servers at once, with TLS by default and SASL login.</li>
-    <li>Older messages load from the server, on networks that support chat history.</li>
-    <li>Messages you send from your phone or another client show up here too.</li>
-    <li>mIRC colors, a color for each nick, a marker at your first unread line, and highlighted mentions.</li>
+    <li><strong>Jump anywhere.</strong> Press <kbd>Ctrl</kbd>+<kbd>K</kbd> and type part of a channel, a DM or a nick. Commands are there too.</li>
+    <li><strong>All your networks in one window.</strong> Several servers at once, with TLS by default, SASL login and bouncers.</li>
+    <li><strong>Scroll back further.</strong> Older messages load from the server, on networks that support chat history.</li>
+    <li><strong>One conversation, every device.</strong> What you send from your phone or another client shows up here too.</li>
+    <li><strong>Easy to follow.</strong> A color for each nick, mIRC colors, highlighted mentions, and a marker at your first unread line.</li>
   </ul>
 
   <h2>Keys</h2>
@@ -245,8 +275,24 @@
     <tr><td><code>/help</code></td><td>List every command</td></tr>
   </table>
 
+  <h2>Not yet</h2>
+  <p>honk is young. Things it does not do today:</p>
+  <ul class="not-yet">
+    <li>Windows, and Linux with musl libc, such as Alpine.</li>
+    <li>Notifications. A mention gets a badge inside honk, but no desktop notification or terminal bell.</li>
+    <li>Saved logs. Scrollback is gone when you quit. <span class="why">A bouncer, or a network with chat history, keeps it for you.</span></li>
+    <li>An ignore list.</li>
+    <li>Moderation commands such as <code>/kick</code>, <code>/ban</code> and <code>/mode</code>. <span class="why">Send them with <code>/raw</code> for now.</span></li>
+    <li>Proxies, DCC file transfers, scripts, plugins and color themes.</li>
+  </ul>
+  <p class="note">
+    Missing something you need?
+    <a href="https://github.com/agustingianni/honk/issues">Open an issue</a>.
+  </p>
+
   <footer>
     <a href="https://github.com/agustingianni/honk">Source on GitHub</a> &middot;
+    <a href="https://github.com/agustingianni/honk/releases">What's new</a> &middot;
     <a href="https://github.com/agustingianni/honk/issues">Report a bug</a> &middot;
     MIT license &middot;
     Made by goose
