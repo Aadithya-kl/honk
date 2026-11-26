@@ -17,6 +17,8 @@ interface ChatPaneProps {
 }
 
 const NICK_COL_WIDTH = 12;
+/** Time (5), a space, then the nick column. The message body starts after this. */
+const LABEL_COL_WIDTH = 5 + 1 + NICK_COL_WIDTH;
 const BLANK_TIME = "     ";
 const BLANK_NICK = " ".repeat(NICK_COL_WIDTH);
 const GROUP_WINDOW_MS = 5 * 60_000;
@@ -68,10 +70,14 @@ function UnreadDivider({ paneWidth }: { paneWidth: number }) {
 const MessageRow = memo(function MessageRow({
   msg,
   grouped,
+  highlightMentions,
 }: {
   msg: ChatMessage;
   grouped: boolean;
+  /** False in a DM: every line there is to you, so painting each one adds nothing. */
+  highlightMentions: boolean;
 }) {
+  const mention = highlightMentions && Boolean(msg.isMention);
   const sender = msg.from ?? "";
   const senderColor = msg.isSelf ? theme.accent : nickColor(sender);
   let label: ReactNode;
@@ -83,18 +89,18 @@ const MessageRow = memo(function MessageRow({
     case "message":
       label = <strong>{padNick(sender)}</strong>;
       labelFg = senderColor;
-      bg = msg.isMention ? theme.bgMention : theme.bgBase;
+      bg = mention ? theme.bgMention : theme.bgBase;
       body = (
         <FormattedText
           text={msg.text}
-          defaultFg={msg.isMention ? theme.fgBright : theme.fgPrimary}
+          defaultFg={mention ? theme.fgBright : theme.fgPrimary}
         />
       );
       break;
     case "action":
       label = padNick("*");
       labelFg = theme.accentAlt;
-      bg = msg.isMention ? theme.bgMention : theme.bgBase;
+      bg = mention ? theme.bgMention : theme.bgBase;
       body = (
         <>
           <span fg={senderColor}>
@@ -123,23 +129,40 @@ const MessageRow = memo(function MessageRow({
     }
   }
 
+  // Two columns, so a long body wraps inside its own column and the gutter line
+  // continues down beside it.
   return (
-    <box width="100%" paddingLeft={1} paddingRight={1} backgroundColor={bg}>
-      <text>
-        {grouped ? (
-          <>
-            <span fg={theme.fgDim}>{BLANK_TIME} </span>
-            <span fg={theme.fgDim}>{BLANK_NICK}</span>
-          </>
-        ) : (
-          <>
-            <span fg={theme.fgMuted}>{formatTime(msg.timestamp)} </span>
-            <span fg={labelFg}>{label}</span>
-          </>
-        )}
-        <span fg={theme.gutter}> │ </span>
-        {body}
-      </text>
+    <box
+      width="100%"
+      flexDirection="row"
+      paddingLeft={1}
+      paddingRight={1}
+      backgroundColor={bg}
+    >
+      <box width={LABEL_COL_WIDTH} flexShrink={0}>
+        <text>
+          {grouped ? (
+            <span fg={theme.fgDim}>
+              {BLANK_TIME} {BLANK_NICK}
+            </span>
+          ) : (
+            <>
+              <span fg={theme.fgMuted}>{formatTime(msg.timestamp)} </span>
+              <span fg={labelFg}>{label}</span>
+            </>
+          )}
+        </text>
+      </box>
+      <box
+        flexGrow={1}
+        flexShrink={1}
+        marginLeft={1}
+        paddingLeft={1}
+        border={["left"]}
+        borderColor={theme.gutter}
+      >
+        <text>{body}</text>
+      </box>
     </box>
   );
 });
@@ -375,7 +398,11 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
             return (
               <box key={msg.id} flexDirection="column" width="100%">
                 {showDivider && <UnreadDivider paneWidth={paneWidth} />}
-                <MessageRow msg={msg} grouped={grouped} />
+                <MessageRow
+                  msg={msg}
+                  grouped={grouped}
+                  highlightMentions={buffer.kind === "channel"}
+                />
               </box>
             );
           })}
