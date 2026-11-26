@@ -151,6 +151,22 @@ function routeTarget(rawTarget: string, from: string, isSelf: boolean): string {
   return isChannelName(rawTarget) || isSelf ? rawTarget : from;
 }
 
+/**
+ * Runs `hook` before each event reaches any listener. The library's own plugins (nicklist)
+ * listen before the app does and change state first, so state "before the event" must be
+ * read here.
+ */
+function beforeEmit(
+  client: Client,
+  hook: (event: string, payload: unknown) => void,
+): void {
+  (
+    client as unknown as {
+      hooks: { beforeCall(key: "emit", hook: (event: string, payload: unknown) => void): void };
+    }
+  ).hooks.beforeCall("emit", hook);
+}
+
 function channelsWithNick(server: ServerState, nick: string): string[] {
   const lower = nick.toLowerCase();
   return server.bufferOrder.filter((name) => {
@@ -521,6 +537,21 @@ export class IrcManager {
     /** The server state, or undefined if this client was replaced. */
     const live = () => (isStale() ? undefined : this.servers.get(serverId));
 
+    // State from before the nicklist plugin handled an event, keyed by the event payload:
+    // the channels a quitting/renamed nick was in, and whether a joined buffer existed.
+    const priorChannels = new WeakMap<object, string[]>();
+    const priorBufferExisted = new WeakMap<object, boolean>();
+    beforeEmit(client, (event, payload) => {
+      const server = live();
+      if (!server || typeof payload !== "object" || payload === null) return;
+      const msg = payload as { source?: { name?: string }; params?: { channel?: string } };
+      if (event === "quit" || event === "nick") {
+        priorChannels.set(payload, channelsWithNick(server, normalizeNick(msg.source?.name)));
+      } else if (event === "join" && msg.params?.channel) {
+        priorBufferExisted.set(payload, Boolean(server.buffers[msg.params.channel]));
+      }
+    });
+
     client.on("error", (err) => {
       if (isStale()) return;
       const server = this.servers.get(serverId);
@@ -682,7 +713,8 @@ export class IrcManager {
       if (!server) return;
       const channel = msg.params.channel;
       const who = normalizeNick(msg.source?.name);
-      const alreadyExisted = Boolean(server.buffers[channel]);
+      const alreadyExisted =
+        priorBufferExisted.get(msg) ?? Boolean(server.buffers[channel]);
       this.ensureBuffer(serverId, channel, "channel");
       if (sameNick(who, server.nick)) {
         // Don't hijack active buffer on silent reconnect re-joins
@@ -729,7 +761,7 @@ export class IrcManager {
       if (!server) return;
       const who = normalizeNick(msg.source?.name);
       const reason = msg.params.comment ? ` (${msg.params.comment})` : "";
-      for (const bufName of channelsWithNick(server, who)) {
+      for (const bufName of priorChannels.get(msg) ?? channelsWithNick(server, who)) {
         this.pushMessage(serverId, bufName, makeMessage("part", `${who} quit${reason}`));
       }
     });
@@ -764,7 +796,7 @@ export class IrcManager {
         );
         return;
       }
-      for (const bufName of channelsWithNick(server, oldNick)) {
+      for (const bufName of priorChannels.get(msg) ?? channelsWithNick(server, oldNick)) {
         this.pushMessage(
           serverId,
           bufName,
