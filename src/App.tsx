@@ -13,7 +13,9 @@ import { Omnibox } from "./ui/Omnibox.tsx";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { StatusBar } from "./ui/StatusBar.tsx";
 
-const NO_USERS: never[] = [];
+/** Narrower than this, the panel is hidden whatever its toggle says. */
+const SIDEBAR_MIN_WIDTH = 65;
+const NICKLIST_MIN_WIDTH = 90;
 
 interface AppProps {
   manager: IrcManager;
@@ -104,8 +106,11 @@ export function App({ manager }: AppProps) {
     [manager, activeServerId],
   );
 
-  const showSidebar = sidebarOpen && width >= 65;
-  const showNicklist = nicklistOpen && width >= 90;
+  const sidebarFits = width >= SIDEBAR_MIN_WIDTH;
+  const nicklistFits = width >= NICKLIST_MIN_WIDTH;
+  const showSidebar = sidebarOpen && sidebarFits;
+  // DMs and *status have no user list, so the panel would only show "No users".
+  const showNicklist = nicklistOpen && nicklistFits && activeBuffer?.kind === "channel";
   const chatWidth =
     width - (showSidebar ? 24 : 0) - (showNicklist ? 20 : 0);
 
@@ -138,14 +143,19 @@ export function App({ manager }: AppProps) {
 
         {showNicklist && (
           <Nicklist
-            users={activeBuffer?.kind === "channel" ? activeBuffer.users : NO_USERS}
+            users={activeBuffer!.users}
             myNick={activeServer?.nick ?? ""}
             onSelectUser={selectUser}
           />
         )}
       </box>
 
-      <StatusBar server={activeServer} />
+      <StatusBar
+        server={activeServer}
+        width={width}
+        sidebarFits={sidebarFits}
+        nicklistFits={nicklistFits && activeBuffer?.kind === "channel"}
+      />
 
       {omniboxOpen && (
         <Omnibox
