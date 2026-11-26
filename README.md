@@ -65,6 +65,22 @@ release workflow from a tagged commit:
 gh attestation verify ~/.local/bin/honk -R agustingianni/honk
 ```
 
+### Upgrade
+
+If you installed honk with the install script, upgrade it with:
+
+```sh
+honk upgrade
+```
+
+It downloads the latest release and checks it the same way the install script
+does: the checksum, and the attestation when `gh` is installed and logged in.
+Then it replaces the binary. A honk that is already running keeps working.
+
+`honk upgrade` only replaces the copy that the install script recorded in
+`~/.local/state/honk/receipt.json`. If you installed honk another way, upgrade
+it that way, or run the install script again.
+
 ## Usage
 
 Connect to one server from the command line:

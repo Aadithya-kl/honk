@@ -3,6 +3,7 @@ import { createRoot, type Root } from "@opentui/react";
 import { App } from "./App.tsx";
 import { loadConfig } from "./config.ts";
 import { IrcManager } from "./irc/manager.ts";
+import { runUpgrade } from "./upgrade.ts";
 import { versionLine } from "./version.ts";
 
 // Answer before reading the config or taking over the terminal.
@@ -10,6 +11,9 @@ const args = process.argv.slice(2);
 if (args.includes("--version") || args.includes("-v")) {
   console.log(versionLine());
   process.exit(0);
+}
+if (args[0] === "upgrade") {
+  process.exit(await runUpgrade());
 }
 
 interface HotState {

@@ -15,6 +15,7 @@
     "start": "bun run src/index.tsx",
     "demo": "bun run src/index.tsx --demo",
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "build": "bun build src/index.tsx --compile --outfile dist/honk",
     "release": "bun scripts/release.ts",
     "record-demo": "vhs scripts/demo.tape"
