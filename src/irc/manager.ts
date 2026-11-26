@@ -55,15 +55,25 @@ function createControl(): ServerControl {
   };
 }
 
+/**
+ * The TLS error code if the server's certificate was rejected (self-signed, expired,
+ * wrong host...). Retrying can't fix these. Node and Bun put the reason only in `code`;
+ * the message is free text such as "self signed certificate".
+ */
+function tlsCertErrorCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== "string") return undefined;
+  return /CERT|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER/.test(code)
+    ? code
+    : undefined;
+}
+
 function isFatalErrorMessage(message: string): boolean {
   const m = message.toLowerCase();
   return (
     m.includes("sasl auth failed") ||
     m.includes("sasl authentication failed") ||
     m.includes("err_saslfail") ||
-    m.includes("cert_") ||
-    m.includes("self_signed") ||
-    m.includes("unable_to_verify_leaf_signature") ||
     m.includes("k-lined") ||
     m.includes("g-lined") ||
     m.includes("z-lined") ||
@@ -564,7 +574,8 @@ export class IrcManager {
         makeMessage("error", `Error (${err.type}): ${errText}`),
       );
 
-      if (isFatalErrorMessage(errText)) {
+      const certCode = tlsCertErrorCode(err);
+      if (certCode || isFatalErrorMessage(errText)) {
         ctrl.fatalError = true;
         this.clearServerTimers(ctrl);
         if (server) {
@@ -576,7 +587,9 @@ export class IrcManager {
           STATUS_BUFFER,
           makeMessage(
             "error",
-            "Auto-reconnect paused (fatal/auth error). Fix credentials and run /connect.",
+            certCode
+              ? `Auto-reconnect paused: the server's TLS certificate was rejected (${certCode}). Check the host name and port, then run /connect.`
+              : "Auto-reconnect paused (fatal/auth error). Fix credentials and run /connect.",
           ),
         );
         return;
