@@ -93,7 +93,17 @@ export interface ActiveBuffer {
   buffer: string;
 }
 
+/** A newer honk release, found by the update check (src/updateCheck.ts). */
+export interface UpdateNotice {
+  /** The latest release tag, such as "v0.3.0". */
+  latest: string;
+  /** True when `honk upgrade` can replace this copy. */
+  upgradeable: boolean;
+}
+
 export interface StoreSnapshot {
   servers: ServerState[];
   active: ActiveBuffer | null;
+  /** Shown in the status bar. Null when honk is up to date, or before the check answers. */
+  update: UpdateNotice | null;
 }

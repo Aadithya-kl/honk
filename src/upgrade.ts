@@ -70,9 +70,9 @@ export function readReceipt(path: string): string | undefined {
  *
  *   /agustingianni/honk/releases/latest -> /agustingianni/honk/releases/tag/v0.2.0
  */
-export async function latestRelease(githubUrl: string): Promise<string> {
+export async function latestRelease(githubUrl: string, signal?: AbortSignal): Promise<string> {
   const pageUrl = `${githubUrl}/${REPO}/releases/latest`;
-  const res = await fetch(pageUrl, { method: "HEAD", redirect: "manual" });
+  const res = await fetch(pageUrl, { method: "HEAD", redirect: "manual", signal });
   const location = res.headers.get("location");
   if (res.status < 300 || res.status >= 400 || !location) {
     throw new UpgradeError(`could not find the latest release (${pageUrl} answered ${res.status})`);

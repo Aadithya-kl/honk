@@ -81,6 +81,13 @@ Then it replaces the binary. A honk that is already running keeps working.
 `~/.local/state/honk/receipt.json`. If you installed honk another way, upgrade
 it that way, or run the install script again.
 
+Once a day at most, honk asks GitHub in the background for the latest release
+tag. When there is a newer one, the status bar at the bottom shows it, such as
+`v0.3.0 available: honk upgrade`, and the status buffer explains it. It only
+reads the tag: nothing is downloaded until you run `honk upgrade`. To turn the
+check off, set `HONK_NO_UPDATE_CHECK=1`. It is also off when `CI` is set and in
+`--demo`.
+
 ## Usage
 
 Connect to one server from the command line:

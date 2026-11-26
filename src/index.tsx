@@ -3,6 +3,7 @@ import { createRoot, type Root } from "@opentui/react";
 import { App } from "./App.tsx";
 import { loadConfig } from "./config.ts";
 import { IrcManager } from "./irc/manager.ts";
+import { startUpdateCheck } from "./updateCheck.ts";
 import { runUpgrade } from "./upgrade.ts";
 import { versionLine } from "./version.ts";
 
@@ -38,6 +39,8 @@ if (!g.__ircHot) {
       manager.addServer(server);
     }
   }
+  // In the background, at most once a day. See src/updateCheck.ts.
+  startUpdateCheck((update, text) => manager.showUpdate(update, text));
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,

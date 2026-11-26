@@ -160,6 +160,7 @@ export function App({ manager }: AppProps) {
         width={width}
         sidebarFits={sidebarFits}
         nicklistFits={nicklistFits && activeBuffer?.kind === "channel"}
+        update={snapshot.update}
       />
 
       {omniboxOpen && (

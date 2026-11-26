@@ -10,6 +10,7 @@ import type {
   ServerConfig,
   ServerState,
   StoreSnapshot,
+  UpdateNotice,
 } from "../types.ts";
 import {
   bufferKindFor,
@@ -273,7 +274,8 @@ export class IrcManager {
   private serverOrder: string[] = [];
   private active: ActiveBuffer | null = null;
   private listeners = new Set<() => void>();
-  private snapshot: StoreSnapshot = { servers: [], active: null };
+  private snapshot: StoreSnapshot = { servers: [], active: null, update: null };
+  private update: UpdateNotice | null = null;
   private wakeInterval: ReturnType<typeof setInterval> | null = null;
   /** Channels the user asked to /join, with when the request expires. The join switches to them. See joinKey. */
   private requestedJoins = new Map<string, number>();
@@ -384,6 +386,7 @@ export class IrcManager {
     this.snapshot = {
       servers,
       active: this.active ? { ...this.active } : null,
+      update: this.update,
     };
     for (const listener of this.listeners) {
       listener();
@@ -420,6 +423,27 @@ export class IrcManager {
     this.controls.set(id, createControl());
     this.serverOrder.push(id);
     this.active = { serverId: id, buffer: STATUS_BUFFER };
+    this.emit();
+  }
+
+  /**
+   * Shows a line from honk itself, not from a server, such as the update notice.
+   * It goes to the first server's *status buffer, which is where honk starts.
+   * As a system line, it does not count as unread.
+   */
+  addAppNotice(text: string): void {
+    const id = this.serverOrder[0];
+    if (!id) return;
+    this.pushMessage(id, STATUS_BUFFER, makeMessage("system", text));
+  }
+
+  /**
+   * Shows that a newer release exists: a short label in the status bar, which
+   * stays visible in every buffer, and the full sentence in *status.
+   */
+  showUpdate(update: UpdateNotice, text: string): void {
+    this.update = { ...update };
+    this.addAppNotice(text);
     this.emit();
   }
 
