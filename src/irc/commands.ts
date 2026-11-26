@@ -24,7 +24,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "disconnect", args: "[reason]", summary: "Disconnect from this server" },
   { name: "raw", args: "<COMMAND ...>", summary: "Send a raw IRC line" },
   { name: "clear", summary: "Clear this buffer" },
-  { name: "demo", summary: "Open a local #demo channel" },
+  { name: "demo", summary: "Open the offline demo" },
   { name: "help", summary: "List the commands" },
   { name: "quit", summary: "Quit the app" },
 ];

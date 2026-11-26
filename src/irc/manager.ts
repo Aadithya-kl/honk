@@ -6,6 +6,7 @@ import type {
   BufferState,
   ChatMessage,
   MessageKind,
+  NickEntry,
   ServerConfig,
   ServerState,
   StoreSnapshot,
@@ -18,6 +19,17 @@ import {
   STATUS_BUFFER,
 } from "./names.ts";
 import { SLASH_COMMANDS } from "./commands.ts";
+import {
+  DEMO_AMBIENT,
+  DEMO_HISTORY,
+  DEMO_NETWORKS,
+  DEMO_NICK,
+  DEMO_REPLIES,
+  DEMO_START,
+  DEMO_TIMELINE,
+  demoWhois,
+  type DemoEvent,
+} from "./demo.ts";
 import { createNodeRuntime } from "./runtime.ts";
 
 /** Messages kept per buffer from live traffic. */
@@ -26,6 +38,12 @@ const MAX_MESSAGES = 500;
 const MAX_MESSAGES_WITH_HISTORY = 5000;
 /** A paste with more lines than this is refused, so a wrong paste can't flood a channel. */
 const MAX_PASTE_LINES = 10;
+
+/** In the demo: how long someone takes to answer you, and the gap between ambient lines. */
+const DEMO_REPLY_DELAY_MS = 1_200;
+const DEMO_AMBIENT_EVERY_MS = 7_000;
+/** Mode prefixes, highest first, for sorting the demo's user lists. */
+const PREFIX_ORDER = "~&@%+";
 
 // Reconnect & health tuning
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -216,6 +234,26 @@ function sortBufferOrder(server: ServerState, order: string[]): string[] {
   });
 }
 
+/** Sorts a user list by mode (ops, then voice, then everyone else), then by nick. */
+function sortUsers(users: NickEntry[]): NickEntry[] {
+  const rank = (p: string) => (p ? PREFIX_ORDER.indexOf(p[0]!) : PREFIX_ORDER.length);
+  return [...users].sort(
+    (a, b) => rank(a.prefix) - rank(b.prefix) || a.nick.localeCompare(b.nick),
+  );
+}
+
+/** A demo channel's users from "@alice"-style entries, with the demo user added. */
+function demoUsers(entries: string[]): NickEntry[] {
+  const users = entries.map((entry): NickEntry => {
+    const prefix = PREFIX_ORDER.includes(entry[0]!) ? entry[0]! : "";
+    return { prefix, nick: entry.slice(prefix.length) };
+  });
+  if (!users.some((u) => sameNick(u.nick, DEMO_NICK))) {
+    users.push({ prefix: "", nick: DEMO_NICK });
+  }
+  return sortUsers(users);
+}
+
 function joinKey(serverId: string, channel: string): string {
   return `${serverId}\n${channel.toLowerCase()}`;
 }
@@ -357,7 +395,7 @@ export class IrcManager {
     const id = "local";
     const status = createBuffer(STATUS_BUFFER, "status");
     status.messages.push(
-      makeMessage("system", "Welcome to irc — Bun + OpenTUI IRC client."),
+      makeMessage("system", "Welcome to honk, a terminal IRC client."),
       makeMessage(
         "system",
         "Connect to a server with: /connect irc.libera.chat 6697 yournick",
@@ -366,6 +404,7 @@ export class IrcManager {
         "system",
         "Or create honk.json (see honk.example.json) for multi-server auto-connect. Type /help for commands.",
       ),
+      makeMessage("system", "To look around without connecting anywhere, type /demo."),
     );
     const server: ServerState = {
       id,
@@ -1376,6 +1415,290 @@ export class IrcManager {
     this.setActive(next.serverId, next.buffer);
   }
 
+  // ---- The offline demo (honk --demo, /demo). The data is in demo.ts. ----
+
+  /** Servers that belong to the demo. They have no client; the methods below answer for them. */
+  private demoServers = new Set<string>();
+  private demoReplyCount = 0;
+
+  /** Adds the demo networks, opens #honk, and starts the timeline of incoming messages. */
+  startDemo(): void {
+    if (this.demoServers.size > 0) {
+      this.setActive(DEMO_START.serverId, DEMO_START.buffer);
+      return;
+    }
+    // The welcome screen's placeholder server goes away, as it does for a real server.
+    if (this.servers.has("local") && this.serverOrder.length === 1) {
+      this.servers.delete("local");
+      this.controls.delete("local");
+      this.serverOrder = [];
+    }
+
+    const now = Date.now();
+    for (const net of DEMO_NETWORKS) {
+      const buffers: Record<string, BufferState> = {};
+      for (const def of net.buffers) {
+        const kind = bufferKindFor(def.name);
+        const buf = createBuffer(def.name, kind);
+        buf.topic = def.topic ?? "";
+        if (kind === "channel") buf.users = demoUsers(def.users ?? []);
+        for (const line of def.lines) {
+          const msg = makeMessage(line.kind, line.text, {
+            from: line.from,
+            timestamp: new Date(now - line.mins * 60_000),
+            isMention:
+              line.from !== undefined &&
+              (kind === "dm" || mentionsNick(line.text, DEMO_NICK)),
+          });
+          buf.messages.push(msg);
+          if (line.unread) {
+            buf.unread += 1;
+            buf.hasMention ||= Boolean(msg.isMention);
+            buf.firstUnreadId ??= msg.id;
+          }
+        }
+        buffers[def.name] = buf;
+      }
+      const server: ServerState = {
+        id: net.id,
+        name: net.name,
+        via: net.via,
+        // No host: nothing can connect it, and the wake check skips it.
+        config: { id: net.id, host: "", nick: DEMO_NICK, autoConnect: false },
+        status: "connected",
+        nick: DEMO_NICK,
+        tls: true,
+        buffers,
+        bufferOrder: [],
+      };
+      server.bufferOrder = sortBufferOrder(server, Object.keys(buffers));
+      this.servers.set(net.id, server);
+      this.controls.set(net.id, createControl());
+      this.serverOrder.push(net.id);
+      this.demoServers.add(net.id);
+    }
+
+    // The start buffer is on screen, so it has no badge. Its divider stays until you leave.
+    const start = this.servers.get(DEMO_START.serverId)!;
+    const startBuf = start.buffers[DEMO_START.buffer]!;
+    start.buffers = {
+      ...start.buffers,
+      [DEMO_START.buffer]: { ...startBuf, unread: 0, hasMention: false },
+    };
+    if (this.active) this.clearUnreadDivider(this.active.serverId, this.active.buffer);
+    this.active = { ...DEMO_START };
+    this.emit();
+
+    for (const event of DEMO_TIMELINE) {
+      setTimeout(() => this.demoIncoming(event), event.afterMs);
+    }
+    const lastMs = Math.max(...DEMO_TIMELINE.map((e) => e.afterMs));
+    let next = 0;
+    setTimeout(() => {
+      setInterval(() => {
+        this.demoIncoming(DEMO_AMBIENT[next % DEMO_AMBIENT.length]!);
+        next += 1;
+      }, DEMO_AMBIENT_EVERY_MS);
+    }, lastMs);
+  }
+
+  /** A message from a demo person. Skipped if it is for a channel you have left. */
+  private demoIncoming(event: DemoEvent): void {
+    const server = this.servers.get(event.serverId);
+    if (!server) return;
+    const isDm = bufferKindFor(event.buffer) === "dm";
+    if (!isDm && !this.hasBuffer(event.serverId, event.buffer)) return;
+    this.pushMessage(
+      event.serverId,
+      event.buffer,
+      makeMessage(event.kind ?? "message", event.text, {
+        from: event.from,
+        isMention: isDm || mentionsNick(event.text, server.nick),
+      }),
+    );
+  }
+
+  /** Someone answers what you said: the other person in a DM, someone in the channel otherwise. */
+  private demoRespond(serverId: string, bufferName: string): void {
+    const server = this.servers.get(serverId);
+    const buf = server?.buffers[this.bufferKey(serverId, bufferName)];
+    if (!server || !buf) return;
+    let from = bufferName;
+    if (buf.kind === "channel") {
+      const others = buf.users.filter((u) => !sameNick(u.nick, server.nick));
+      if (others.length === 0) return;
+      from = others[this.demoReplyCount % others.length]!.nick;
+    }
+    const text = DEMO_REPLIES[this.demoReplyCount % DEMO_REPLIES.length]!;
+    this.demoReplyCount += 1;
+    setTimeout(
+      () => this.demoIncoming({ serverId, buffer: bufferName, from, text }),
+      DEMO_REPLY_DELAY_MS,
+    );
+  }
+
+  /**
+   * Runs a command on a demo server without a connection. True if it handled the command;
+   * false lets the normal handler run it (/help, /clear, /quit...).
+   */
+  private demoCommand(
+    cmd: string,
+    args: string[],
+    rest: string,
+    server: ServerState,
+    activeBuffer: string,
+    reply: (text: string, kind?: MessageKind) => void,
+  ): boolean {
+    const id = server.id;
+    switch (cmd) {
+      case "j":
+      case "join": {
+        if (!args[0]) {
+          reply("Usage: /join #channel", "error");
+          return true;
+        }
+        const targets = args[0]
+          .split(",")
+          .filter(Boolean)
+          .map((c) => (isChannelName(c) ? c : `#${c}`));
+        for (const target of targets) {
+          if (!this.hasBuffer(id, target)) {
+            this.ensureBuffer(id, target, "channel");
+            const buf = server.buffers[target]!;
+            server.buffers = {
+              ...server.buffers,
+              [target]: { ...buf, users: demoUsers([]) },
+            };
+            this.pushMessage(id, target, makeMessage("join", `${server.nick} joined ${target}`));
+          }
+          this.setActive(id, target);
+        }
+        return true;
+      }
+
+      case "p":
+      case "part":
+      case "leave": {
+        const target = args[0] && isChannelName(args[0]) ? args[0] : activeBuffer;
+        if (target === STATUS_BUFFER) {
+          reply("Use /part inside a channel or DM.", "error");
+        } else {
+          this.removeBuffer(id, target);
+        }
+        return true;
+      }
+
+      case "msg":
+      case "query": {
+        const target = args[0];
+        const text = args.slice(1).join(" ");
+        if (!target) {
+          reply("Usage: /msg <nick|#channel> [message]", "error");
+          return true;
+        }
+        this.ensureBuffer(id, target);
+        this.setActive(id, target);
+        if (text) {
+          this.pushMessage(id, target, makeMessage("message", text, { from: server.nick, isSelf: true }));
+          this.demoRespond(id, target);
+        }
+        return true;
+      }
+
+      case "me": {
+        if (!rest || activeBuffer === STATUS_BUFFER) {
+          reply("Usage: /me <action> (inside a channel or DM)", "error");
+          return true;
+        }
+        this.pushMessage(id, activeBuffer, makeMessage("action", rest, { from: server.nick, isSelf: true }));
+        this.demoRespond(id, activeBuffer);
+        return true;
+      }
+
+      case "nick": {
+        const next = args[0];
+        if (!next) {
+          reply("Usage: /nick <newnick>", "error");
+          return true;
+        }
+        const old = server.nick;
+        const buffers = { ...server.buffers };
+        for (const name of server.bufferOrder) {
+          const buf = buffers[name];
+          if (buf?.kind !== "channel") continue;
+          buffers[name] = {
+            ...buf,
+            users: sortUsers(
+              buf.users.map((u) => (sameNick(u.nick, old) ? { ...u, nick: next } : u)),
+            ),
+          };
+        }
+        server.buffers = buffers;
+        server.nick = next;
+        server.config = { ...server.config, nick: next };
+        reply(`You are now known as ${next}`);
+        return true;
+      }
+
+      case "topic": {
+        const buf = server.buffers[activeBuffer];
+        if (buf?.kind !== "channel") {
+          reply("Use /topic inside a channel.", "error");
+          return true;
+        }
+        if (!rest) {
+          reply(buf.topic ? `Topic: ${buf.topic}` : "No topic is set.");
+          return true;
+        }
+        server.buffers = { ...server.buffers, [activeBuffer]: { ...buf, topic: rest } };
+        reply(`${server.nick} changed the topic to: ${rest}`);
+        return true;
+      }
+
+      case "whois": {
+        if (!args[0]) {
+          reply("Usage: /whois <nick>", "error");
+          return true;
+        }
+        for (const line of demoWhois(args[0])) reply(line);
+        return true;
+      }
+
+      case "history": {
+        const buf = server.buffers[activeBuffer];
+        if (!buf || buf.kind === "status") {
+          reply("Use /history inside a channel or DM.", "error");
+          return true;
+        }
+        const oldest = buf.messages[0]?.timestamp.getTime() ?? Date.now();
+        DEMO_HISTORY.forEach((line, i) => {
+          const minsBefore = DEMO_HISTORY.length - i;
+          this.pushMessage(
+            id,
+            activeBuffer,
+            makeMessage("message", line.text, {
+              from: line.from,
+              timestamp: new Date(oldest - minsBefore * 60_000),
+              isHistory: true,
+            }),
+          );
+        });
+        return true;
+      }
+
+      case "connect":
+      case "server":
+      case "disconnect":
+      case "raw": {
+        reply(`/${cmd} does not work in the offline demo. Quit and start honk without --demo.`, "error");
+        return true;
+      }
+
+      default:
+        return false;
+    }
+  }
+
   handleInput(raw: string): "quit" | void {
     const trimmed = raw.trim();
     if (!trimmed) return;
@@ -1413,6 +1736,16 @@ export class IrcManager {
     if (!raw.trim() || !this.active) return false;
     const { serverId, buffer } = this.active;
     const server = this.servers.get(serverId);
+    if (server && this.demoServers.has(serverId) && buffer !== STATUS_BUFFER) {
+      this.clearUnreadDivider(serverId, buffer);
+      this.pushMessage(
+        serverId,
+        buffer,
+        makeMessage("message", raw, { from: server.nick, isSelf: true }),
+      );
+      this.demoRespond(serverId, buffer);
+      return true;
+    }
     const client = this.clients.get(serverId);
     if (!server || !client || server.status !== "connected") {
       this.pushMessage(
@@ -1464,10 +1797,13 @@ export class IrcManager {
       }
     };
 
+    if (server && this.demoServers.has(server.id)) {
+      if (this.demoCommand(cmd, args, rest, server, activeBuffer, reply)) return;
+    }
+
     switch (cmd) {
       case "help": {
-        const list = SLASH_COMMANDS.filter((c) => c.name !== "demo")
-          .map((c) => (c.args ? `/${c.name} ${c.args}` : `/${c.name}`))
+        const list = SLASH_COMMANDS.map((c) => (c.args ? `/${c.name} ${c.args}` : `/${c.name}`))
           .join(" | ");
         reply(`Commands: ${list}. Press Ctrl+K for the omnibox.`);
         return;
@@ -1698,68 +2034,7 @@ export class IrcManager {
       }
 
       case "demo": {
-        if (!server) return;
-        const demoName = "#demo";
-        const now = Date.now();
-        const t = (minsAgo: number) => new Date(now - minsAgo * 60_000);
-        const me = server.nick || "goose";
-        const unreadMsg = makeMessage(
-          "message",
-          `hey ${me}, check out \x0309grouped messages\x0f + \x02mIRC bold\x02 + \x1Ditalic\x1D!`,
-          { from: "bob", timestamp: t(2), isMention: true },
-        );
-
-        const demoBuf: BufferState = {
-          name: demoName,
-          kind: "channel",
-          topic: "\x02Demo channel\x02 — \x0311https://opentui.com\x0f (local only, no IRC traffic)",
-          users: [
-            { prefix: "@", nick: "alice" },
-            { prefix: "+", nick: "bob" },
-            { prefix: "", nick: "charlie" },
-            { prefix: "", nick: me },
-          ],
-          messages: [
-            makeMessage("join", "alice joined #demo", { timestamp: t(8) }),
-            makeMessage("message", "hey, just pushed the new OpenTUI build", {
-              from: "alice",
-              timestamp: t(6),
-            }),
-            makeMessage(
-              "message",
-              "check out https://github.com/anomalyco/opentui — clickable link!",
-              { from: "alice", timestamp: t(6) },
-            ),
-            makeMessage(
-              "message",
-              "supports \x0304red\x0f, \x0308gold\x0f, \x0313pink\x0f, and \x0473dacaTrueColor hex\x0f",
-              { from: "alice", timestamp: t(5) },
-            ),
-            makeMessage("action", "tests the live hot-reload", {
-              from: "charlie",
-              timestamp: t(4),
-            }),
-            unreadMsg,
-            makeMessage(
-              "message",
-              "notice how repeated nicks collapse within 5 minutes",
-              { from: "bob", timestamp: t(1) },
-            ),
-            makeMessage(
-              "message",
-              "and the coral 'new' divider clears when you reply or switch away",
-              { from: "bob", timestamp: t(1) },
-            ),
-          ],
-          unread: 0,
-          hasMention: false,
-          firstUnreadId: unreadMsg.id,
-        };
-
-        this.ensureBuffer(server.id, demoName, "channel");
-        server.buffers = { ...server.buffers, [demoName]: demoBuf };
-        this.active = { serverId: server.id, buffer: demoName };
-        this.emit();
+        this.startDemo();
         return;
       }
 

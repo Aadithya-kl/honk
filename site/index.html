@@ -146,6 +146,29 @@
     padding: 0.05rem 0.35rem;
   }
 
+  /* The recording is wider than the text column, so it breaks out of it. */
+  figure.demo {
+    width: min(72rem, calc(100vw - 2rem));
+    margin: 2.5rem 0 0;
+    position: relative;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+  figure.demo video,
+  figure.demo img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+    background: var(--bg-deep);
+  }
+  figure.demo figcaption {
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    text-align: center;
+  }
+
   footer {
     margin-top: 3.5rem;
     padding-top: 1.25rem;
@@ -181,6 +204,17 @@
     <a href="https://github.com/agustingianni/honk/releases/latest">download a binary yourself</a>.
   </p>
 
+  <figure class="demo">
+    <video id="demo" autoplay loop muted playsinline preload="auto"
+      width="1400" height="820" poster="demo.png"
+      aria-label="A recording of honk: tab completion, jumping between channels with the omnibox, replying to a DM, and the command list">
+      <source src="demo.webm" type="video/webm">
+      <source src="demo.mp4" type="video/mp4">
+      <img src="demo.png" width="1400" height="820" alt="honk showing the #honk channel, a list of servers and channels, and a user list">
+    </video>
+    <figcaption>Recorded with <code>honk --demo</code>: made-up people, no real IRC traffic.</figcaption>
+  </figure>
+
   <h2>Start</h2>
   <p>Connect to a server and join a channel:</p>
   <div class="install">
@@ -190,6 +224,10 @@
     To connect to several servers when honk starts, write a
     <a href="https://github.com/agustingianni/honk#configuration">config file</a>.
   </p>
+  <p>Or look around first, without connecting anywhere:</p>
+  <div class="install">
+    <pre>honk --demo</pre>
+  </div>
 
   <h2>What you get</h2>
   <ul class="features">
@@ -218,6 +256,16 @@
   </footer>
 </main>
 <script>
+  // With reduced motion, show the still image and let the viewer start the video.
+  (function () {
+    var video = document.getElementById("demo");
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      video.removeAttribute("autoplay");
+      video.pause();
+      video.controls = true;
+    }
+  })();
+
   // Copy the install command. Falls back to selecting the text if the
   // clipboard API is not available (for example, on a non-HTTPS preview).
   (function () {

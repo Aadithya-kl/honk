@@ -13,9 +13,11 @@
     "dev": "bun --hot src/index.tsx",
     "watch": "bun --watch src/index.tsx",
     "start": "bun run src/index.tsx",
+    "demo": "bun run src/index.tsx --demo",
     "typecheck": "tsc --noEmit",
     "build": "bun build src/index.tsx --compile --outfile dist/honk",
-    "release": "bun scripts/release.ts"
+    "release": "bun scripts/release.ts",
+    "record-demo": "vhs scripts/demo.tape"
   },
   "dependencies": {
     "@opentui/core": "0.9.8",

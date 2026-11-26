@@ -62,8 +62,15 @@ Connect to one server from the command line:
 honk --server irc.libera.chat --nick goose --channel '#libera'
 ```
 
+To look around first, without connecting anywhere, run the offline demo. It has
+made-up networks, channels and people, and sends nothing over the network:
+
+```sh
+honk --demo
+```
+
 Flags: `--server host[:port]`, `--port`, `--nick`, `--channel` (can repeat),
-`--password` (uses SASL), `--sasl`, `--no-tls`, `--config path`.
+`--password` (uses SASL), `--sasl`, `--no-tls`, `--config path`, `--demo`.
 TLS is on by default. Type `/help` inside the client for the commands.
 
 ## Configuration
@@ -93,11 +100,17 @@ The website is the plain HTML in `site/`. A push to `main` that changes
 `site/` publishes it to https://agustingianni.github.io/honk/ through the
 `pages` workflow. `site/install.sh` is the install script above.
 
+The recording on the website comes from `scripts/demo.tape`. To record it
+again after a UI change, install [VHS](https://github.com/charmbracelet/vhs)
+and run `bun run record-demo`. It writes `site/demo.mp4`, `site/demo.webm`
+and `site/demo.png`.
+
 ## Development
 
 ```sh
 bun install
 bun run dev         # run with hot reload
+bun run demo        # run the offline demo
 bun run typecheck
 bun run build       # binary for this machine in dist/honk
 bun run release     # binaries for every platform in dist/

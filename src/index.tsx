@@ -17,7 +17,9 @@ if (!g.__ircHot) {
   const config = loadConfig();
   const manager = new IrcManager();
 
-  if (config.servers.length === 0) {
+  if (process.argv.includes("--demo")) {
+    manager.startDemo();
+  } else if (config.servers.length === 0) {
     manager.initWelcome();
   } else {
     for (const server of config.servers) {
