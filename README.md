@@ -19,14 +19,14 @@ later `honk upgrade` only replaces a copy this script installed. Settings:
 - `HONK_VERSION=v0.1.0` installs that release instead of the latest one.
 - `HONK_INSTALL_DIR=~/bin` installs into another folder.
 
+```sh
+curl -fsSL https://agustingianni.github.io/honk/install.sh | HONK_VERSION=v0.1.0 sh
+```
+
 On Alpine and other musl-based distros, honk needs the C++ runtime first:
 
 ```sh
 apk add libstdc++ libgcc
-```
-
-```sh
-curl -fsSL https://agustingianni.github.io/honk/install.sh | HONK_VERSION=v0.1.0 sh
 ```
 
 ### Install by hand
@@ -87,6 +87,23 @@ tag. When there is a newer one, the status bar at the bottom shows it, such as
 reads the tag: nothing is downloaded until you run `honk upgrade`. To turn the
 check off, set `HONK_NO_UPDATE_CHECK=1`. It is also off when `CI` is set and in
 `--demo`.
+
+### Uninstall
+
+If you installed honk with the install script, delete the binary, the install
+receipt and the update check's cache:
+
+```sh
+rm ~/.local/bin/honk
+rm -rf ~/.local/state/honk ~/.cache/honk
+```
+
+If you installed into another folder with `HONK_INSTALL_DIR`, delete `honk`
+from there instead. If you set `XDG_STATE_HOME` or `XDG_CACHE_HOME`, the other
+two folders are `$XDG_STATE_HOME/honk` and `$XDG_CACHE_HOME/honk`.
+
+Your config is in `~/.config/honk/`. It can hold server passwords, so delete it
+too if you don't need it. If you installed honk another way, remove it that way.
 
 ## Usage
 
