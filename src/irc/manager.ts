@@ -19,7 +19,10 @@ import {
 } from "./names.ts";
 import { createNodeRuntime } from "./runtime.ts";
 
+/** Messages kept per buffer from live traffic. */
 const MAX_MESSAGES = 500;
+/** Hard cap once history (/history, CHATHISTORY playback) has grown a buffer past MAX_MESSAGES. */
+const MAX_MESSAGES_WITH_HISTORY = 5000;
 
 // Reconnect & health tuning
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -150,10 +153,14 @@ function createBuffer(name: string, kind: BufferKind): BufferState {
   };
 }
 
+/** Characters allowed in IRC nicks. A mention must not touch one on either side. */
+const NICK_CHAR = String.raw`[\w\[\]\\` + "`" + String.raw`^{}|-]`;
+
+/** True if `text` contains `nick` as a whole word. `\b` fails for nicks like `goose[m]`. */
 function mentionsNick(text: string, nick: string): boolean {
   if (!nick) return false;
   const escaped = nick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+  return new RegExp(`(?<!${NICK_CHAR})${escaped}(?!${NICK_CHAR})`, "i").test(text);
 }
 
 /** The buffer a chat line belongs to: the channel, or for a DM the other person. */
@@ -177,6 +184,22 @@ function beforeEmit(
   ).hooks.beforeCall("emit", hook);
 }
 
+/** Buffer order for the sidebar: *status, then channels, then DMs, each sorted by name. */
+function sortBufferOrder(server: ServerState, order: string[]): string[] {
+  return order.sort((a, b) => {
+    if (a === STATUS_BUFFER) return -1;
+    if (b === STATUS_BUFFER) return 1;
+    const ka = server.buffers[a]?.kind ?? "dm";
+    const kb = server.buffers[b]?.kind ?? "dm";
+    if (ka !== kb) return ka === "channel" ? -1 : 1;
+    return a.localeCompare(b);
+  });
+}
+
+function joinKey(serverId: string, channel: string): string {
+  return `${serverId}\n${channel.toLowerCase()}`;
+}
+
 function channelsWithNick(server: ServerState, nick: string): string[] {
   const lower = nick.toLowerCase();
   return server.bufferOrder.filter((name) => {
@@ -194,6 +217,8 @@ export class IrcManager {
   private listeners = new Set<() => void>();
   private snapshot: StoreSnapshot = { servers: [], active: null };
   private wakeInterval: ReturnType<typeof setInterval> | null = null;
+  /** Channels the user asked to /join; the join switches to them. See joinKey. */
+  private requestedJoins = new Set<string>();
   private lastWakeTick = Date.now();
 
   constructor() {
@@ -547,18 +572,28 @@ export class IrcManager {
     /** The server state, or undefined if this client was replaced. */
     const live = () => (isStale() ? undefined : this.servers.get(serverId));
 
-    // State from before the nicklist plugin handled an event, keyed by the event payload:
-    // the channels a quitting/renamed nick was in, and whether a joined buffer existed.
+    // The channels a quitting/renamed nick was in, read before the nicklist plugin
+    // removes the nick. Keyed by the event payload.
     const priorChannels = new WeakMap<object, string[]>();
-    const priorBufferExisted = new WeakMap<object, boolean>();
+    // The privmsg/notice plugins emit { source, params } without the IRCv3 tags (server
+    // time, msgid). They emit inside the raw event, so link each payload to the raw tags.
+    type Tags = Record<string, string | undefined>;
+    const chatTags = new WeakMap<object, Tags>();
+    let rawChatTags: Tags | undefined;
     beforeEmit(client, (event, payload) => {
       const server = live();
       if (!server || typeof payload !== "object" || payload === null) return;
-      const msg = payload as { source?: { name?: string }; params?: { channel?: string } };
+      if (event === "raw:privmsg" || event === "raw:notice") {
+        rawChatTags = (payload as { tags?: Tags }).tags;
+        return;
+      }
+      if (/^(privmsg|notice):|^ctcp_action$/.test(event)) {
+        if (rawChatTags) chatTags.set(payload, rawChatTags);
+        return;
+      }
       if (event === "quit" || event === "nick") {
-        priorChannels.set(payload, channelsWithNick(server, normalizeNick(msg.source?.name)));
-      } else if (event === "join" && msg.params?.channel) {
-        priorBufferExisted.set(payload, Boolean(server.buffers[msg.params.channel]));
+        const source = (payload as { source?: { name?: string } }).source;
+        priorChannels.set(payload, channelsWithNick(server, normalizeNick(source?.name)));
       }
     });
 
@@ -726,12 +761,15 @@ export class IrcManager {
       if (!server) return;
       const channel = msg.params.channel;
       const who = normalizeNick(msg.source?.name);
-      const alreadyExisted =
-        priorBufferExisted.get(msg) ?? Boolean(server.buffers[channel]);
       this.ensureBuffer(serverId, channel, "channel");
       if (sameNick(who, server.nick)) {
-        // Don't hijack active buffer on silent reconnect re-joins
-        if (!alreadyExisted || this.active?.buffer === STATUS_BUFFER) {
+        // Switch for a /join, or from this server's *status (auto-join at startup).
+        // Auto-joins and reconnect re-joins never take focus from another buffer.
+        const requested = this.requestedJoins.delete(joinKey(serverId, channel));
+        if (
+          requested ||
+          (this.active?.serverId === serverId && this.active.buffer === STATUS_BUFFER)
+        ) {
           this.setActive(serverId, channel);
         }
         this.pushMessage(
@@ -809,12 +847,14 @@ export class IrcManager {
         );
         return;
       }
+      const line = `${oldNick} is now known as ${newNick}`;
       for (const bufName of priorChannels.get(msg) ?? channelsWithNick(server, oldNick)) {
-        this.pushMessage(
-          serverId,
-          bufName,
-          makeMessage("system", `${oldNick} is now known as ${newNick}`),
-        );
+        this.pushMessage(serverId, bufName, makeMessage("system", line));
+      }
+      // An open DM follows the person to the new nick.
+      if (this.hasBuffer(serverId, oldNick)) {
+        this.renameBuffer(serverId, oldNick, newNick);
+        this.pushMessage(serverId, newNick, makeMessage("system", line));
       }
     });
 
@@ -915,10 +955,13 @@ export class IrcManager {
     ) => {
       const server = live();
       if (!server) return;
+      const tags = msg.tags ?? chatTags.get(msg);
       const from = normalizeNick(msg.source?.name) || "unknown";
       const isSelf = sameNick(from, server.nick);
       const target = routeTarget(msg.params.target, from, isSelf);
-      const isHistory = isHistoryBatch(msg.tags);
+      // A DM opened as "/msg dave" takes the sender's real casing ("Dave") when they write.
+      if (!isSelf && !isChannelName(target)) this.renameBuffer(serverId, target, target);
+      const isHistory = isHistoryBatch(tags);
       const isMention =
         !isSelf &&
         !isHistory &&
@@ -933,8 +976,8 @@ export class IrcManager {
         target,
         makeMessage(kind, msg.params.text, {
           from,
-          msgid: msg.tags?.msgid,
-          timestamp: tagTime(msg.tags),
+          msgid: tags?.msgid,
+          timestamp: tagTime(tags),
           isMention,
           isSelf,
           isHistory,
@@ -956,6 +999,7 @@ export class IrcManager {
       tags?: Record<string, string | undefined>;
     }) => {
       if (isStale()) return;
+      const tags = msg.tags ?? chatTags.get(msg);
       const from = normalizeNick(msg.source?.name) || "server";
       const target = isChannelName(msg.params.target)
         ? msg.params.target
@@ -965,9 +1009,9 @@ export class IrcManager {
         target,
         makeMessage("notice", msg.params.text, {
           from,
-          msgid: msg.tags?.msgid,
-          timestamp: tagTime(msg.tags),
-          isHistory: isHistoryBatch(msg.tags),
+          msgid: tags?.msgid,
+          timestamp: tagTime(tags),
+          isHistory: isHistoryBatch(tags),
         }),
       );
     };
@@ -1001,7 +1045,7 @@ export class IrcManager {
     target: string,
     text: string,
   ): boolean {
-    const buf = this.servers.get(serverId)?.buffers[target];
+    const buf = this.servers.get(serverId)?.buffers[this.bufferKey(serverId, target)];
     if (!buf || buf.messages.length === 0) return false;
     const now = Date.now();
     for (
@@ -1024,26 +1068,54 @@ export class IrcManager {
   ): BufferState | null {
     const server = this.servers.get(serverId);
     if (!server) return null;
-    const existing = server.buffers[name];
+    const existing = server.buffers[this.bufferKey(serverId, name)];
     if (existing) return existing;
 
     const buf = createBuffer(name, kind);
     server.buffers = { ...server.buffers, [name]: buf };
-    const order = [...server.bufferOrder, name];
-    order.sort((a, b) => {
-      if (a === STATUS_BUFFER) return -1;
-      if (b === STATUS_BUFFER) return 1;
-      const ka = server.buffers[a]?.kind ?? "dm";
-      const kb = server.buffers[b]?.kind ?? "dm";
-      if (ka !== kb) return ka === "channel" ? -1 : 1;
-      return a.localeCompare(b);
-    });
-    server.bufferOrder = order;
+    server.bufferOrder = sortBufferOrder(server, [...server.bufferOrder, name]);
     return buf;
   }
 
-  private removeBuffer(serverId: string, name: string): void {
+  /**
+   * The key of the buffer called `name`, ignoring case (IRC nicks and channels are
+   * case-insensitive), or `name` itself if there is none yet.
+   */
+  private bufferKey(serverId: string, name: string): string {
     const server = this.servers.get(serverId);
+    if (!server || server.buffers[name]) return name;
+    return server.bufferOrder.find((b) => sameNick(b, name)) ?? name;
+  }
+
+  private hasBuffer(serverId: string, name: string): boolean {
+    const key = this.bufferKey(serverId, name);
+    return Boolean(this.servers.get(serverId)?.buffers[key]);
+  }
+
+  /** Renames a buffer (a DM after a nick change). Does nothing if `to` already exists. */
+  private renameBuffer(serverId: string, from: string, to: string): void {
+    const server = this.servers.get(serverId);
+    const key = this.bufferKey(serverId, from);
+    const buf = server?.buffers[key];
+    if (!server || !buf || key === to) return;
+    const toKey = this.bufferKey(serverId, to);
+    if (toKey !== key && server.buffers[toKey]) return;
+
+    const { [key]: _, ...rest } = server.buffers;
+    server.buffers = { ...rest, [to]: { ...buf, name: to } };
+    server.bufferOrder = sortBufferOrder(
+      server,
+      server.bufferOrder.map((b) => (b === key ? to : b)),
+    );
+    if (this.active?.serverId === serverId && this.active.buffer === key) {
+      this.active = { serverId, buffer: to };
+    }
+    this.emit();
+  }
+
+  private removeBuffer(serverId: string, bufferName: string): void {
+    const server = this.servers.get(serverId);
+    const name = this.bufferKey(serverId, bufferName);
     if (!server || name === STATUS_BUFFER) return;
     const { [name]: _, ...rest } = server.buffers;
     server.buffers = rest;
@@ -1056,10 +1128,11 @@ export class IrcManager {
 
   private pushMessage(
     serverId: string,
-    bufferName: string,
+    targetName: string,
     message: ChatMessage,
   ): void {
     const server = this.servers.get(serverId);
+    const bufferName = this.bufferKey(serverId, targetName);
     const buf = this.ensureBuffer(serverId, bufferName);
     if (!server || !buf) return;
 
@@ -1085,7 +1158,13 @@ export class IrcManager {
       while (at > 0 && messages[at - 1]!.timestamp.getTime() > t) at--;
     }
     messages.splice(at, 0, message);
-    if (messages.length > MAX_MESSAGES) messages.splice(0, messages.length - MAX_MESSAGES);
+    // History lines go in front of older lines, so trimming the oldest would drop them
+    // right away. Grow the buffer's limit for them instead.
+    let limit = buf.messageLimit ?? MAX_MESSAGES;
+    if (message.isHistory && messages.length > limit) {
+      limit = Math.min(MAX_MESSAGES_WITH_HISTORY, messages.length);
+    }
+    if (messages.length > limit) messages.splice(0, messages.length - limit);
 
     const isActive =
       this.active?.serverId === serverId && this.active.buffer === bufferName;
@@ -1100,6 +1179,7 @@ export class IrcManager {
       [bufferName]: {
         ...buf,
         messages,
+        messageLimit: limit,
         unread: countsAsUnread ? buf.unread + 1 : buf.unread,
         hasMention: countsAsUnread && message.isMention ? true : buf.hasMention,
         firstUnreadId:
@@ -1120,9 +1200,10 @@ export class IrcManager {
     }
   }
 
-  setActive(serverId: string, bufferName: string): void {
+  setActive(serverId: string, name: string): void {
     const server = this.servers.get(serverId);
     if (!server) return;
+    const bufferName = this.bufferKey(serverId, name);
     const buf = server.buffers[bufferName];
     if (!buf) return;
 
@@ -1303,6 +1384,7 @@ export class IrcManager {
         const chan = args[0];
         if (!chan) return reply("Usage: /join #channel", "error");
         const target = isChannelName(chan) ? chan : `#${chan}`;
+        this.requestedJoins.add(joinKey(server.id, target));
         client.join(target);
         return;
       }
@@ -1403,6 +1485,12 @@ export class IrcManager {
         }
         const limit = Math.min(200, Math.max(1, Number(args[0]) || 50));
         const buf = server.buffers[activeBuffer];
+        if (buf && buf.messages.length >= MAX_MESSAGES_WITH_HISTORY) {
+          return reply(
+            `Scrollback is full (${MAX_MESSAGES_WITH_HISTORY} lines). Use /clear to start over.`,
+            "error",
+          );
+        }
         const oldest = buf?.messages.find(
           (m) => m.kind === "message" || m.kind === "action" || m.kind === "notice",
         );
@@ -1426,7 +1514,7 @@ export class IrcManager {
         if (!buf) return;
         server.buffers = {
           ...server.buffers,
-          [activeBuffer]: { ...buf, messages: [] },
+          [activeBuffer]: { ...buf, messages: [], messageLimit: undefined },
         };
         this.emit();
         return;

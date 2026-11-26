@@ -65,6 +65,8 @@ export interface BufferState {
   unread: number;
   hasMention: boolean;
   firstUnreadId?: string;
+  /** Max messages kept. Grows past the default when history is loaded, so it isn't trimmed away. */
+  messageLimit?: number;
 }
 
 export interface ReconnectInfo {

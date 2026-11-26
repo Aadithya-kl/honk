@@ -68,7 +68,9 @@ export function Omnibox({
   onToggleNicklist,
 }: OmniboxProps) {
   const [query, setQuery] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  // The selected item's id, not its row: the list is rebuilt when buffers or unread
+  // counts change, and a row number would then point at another item or past the end.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const activeServer = active
     ? servers.find((s) => s.id === active.serverId)
@@ -326,8 +328,16 @@ export function Omnibox({
   ]);
 
   useEffect(() => {
-    setSelectedIndex(0);
+    setSelectedId(null);
   }, [query]);
+
+  const foundIndex = items.findIndex((item) => item.id === selectedId);
+  const selectedIndex = foundIndex === -1 ? 0 : foundIndex;
+  const moveSelection = (delta: 1 | -1) => {
+    if (items.length === 0) return;
+    const next = items[(selectedIndex + delta + items.length) % items.length];
+    setSelectedId(next?.id ?? null);
+  };
 
   useKeyboard((key) => {
     if (key.name === "escape") {
@@ -335,13 +345,11 @@ export function Omnibox({
       return;
     }
     if (key.name === "down" || (key.ctrl && key.name === "n")) {
-      setSelectedIndex((i) => (items.length === 0 ? 0 : (i + 1) % items.length));
+      moveSelection(1);
       return;
     }
     if (key.name === "up" || (key.ctrl && key.name === "p")) {
-      setSelectedIndex((i) =>
-        items.length === 0 ? 0 : (i - 1 + items.length) % items.length,
-      );
+      moveSelection(-1);
       return;
     }
   });
