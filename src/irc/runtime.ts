@@ -86,41 +86,7 @@ class NodeSocketConn implements Conn {
   }
 }
 
-export const nodeTlsRuntime = {
-  connect(opts: { hostname: string; port: number }): Promise<Conn> {
-    return new Promise((resolve, reject) => {
-      const socket = netConnect(opts.port, opts.hostname, () => {
-        socket.removeListener("error", reject);
-        resolve(new NodeSocketConn(socket));
-      });
-      socket.once("error", reject);
-    });
-  },
-
-  connectTls(opts: {
-    hostname: string;
-    port: number;
-    caCerts?: string[];
-    cert?: string;
-    key?: string;
-  }): Promise<Conn> {
-    return new Promise((resolve, reject) => {
-      const tlsOpts: ConnectionOptions = {
-        host: opts.hostname,
-        port: opts.port,
-        servername: opts.hostname,
-        ...(opts.caCerts ? { ca: opts.caCerts.join("\n") } : {}),
-        ...(opts.cert ? { cert: opts.cert } : {}),
-        ...(opts.key ? { key: opts.key } : {}),
-      };
-      const socket = tlsConnect(tlsOpts, () => {
-        socket.removeListener("error", reject);
-        resolve(new NodeSocketConn(socket));
-      });
-      socket.once("error", reject);
-    });
-  },
-
+const sharedRuntime = {
   readTextFileSync(path: string): string {
     return readFileSync(path, "utf-8");
   },
@@ -133,3 +99,64 @@ export const nodeTlsRuntime = {
     return false;
   },
 };
+
+/**
+ * Waits for `socket` to connect. If `signal` aborts first, the socket is destroyed
+ * and the promise rejects, so a slow handshake can't finish after the caller gave up.
+ */
+function whenConnected(
+  socket: Socket,
+  connectEvent: "connect" | "secureConnect",
+  signal: AbortSignal | undefined,
+): Promise<Conn> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      socket.destroy();
+      reject(new Error("Connection attempt aborted"));
+    };
+    const cleanup = () => {
+      socket.removeListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    socket.once(connectEvent, () => {
+      cleanup();
+      resolve(new NodeSocketConn(socket));
+    });
+    socket.once("error", onError);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** A node:net / node:tls runtime for irc-client-ts. Aborting `signal` cancels a pending connect. */
+export function createNodeRuntime(signal?: AbortSignal) {
+  return {
+    connect(opts: { hostname: string; port: number }): Promise<Conn> {
+      return whenConnected(netConnect(opts.port, opts.hostname), "connect", signal);
+    },
+
+    connectTls(opts: {
+      hostname: string;
+      port: number;
+      caCerts?: string[];
+      cert?: string;
+      key?: string;
+    }): Promise<Conn> {
+      const tlsOpts: ConnectionOptions = {
+        host: opts.hostname,
+        port: opts.port,
+        servername: opts.hostname,
+        ...(opts.caCerts ? { ca: opts.caCerts.join("\n") } : {}),
+        ...(opts.cert ? { cert: opts.cert } : {}),
+        ...(opts.key ? { key: opts.key } : {}),
+      };
+      return whenConnected(tlsConnect(tlsOpts), "secureConnect", signal);
+    },
+
+    ...sharedRuntime,
+  };
+}

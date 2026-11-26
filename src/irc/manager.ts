@@ -17,7 +17,7 @@ import {
   sameNick,
   STATUS_BUFFER,
 } from "./names.ts";
-import { nodeTlsRuntime } from "./runtime.ts";
+import { createNodeRuntime } from "./runtime.ts";
 
 const MAX_MESSAGES = 500;
 
@@ -99,7 +99,12 @@ function tagTime(tags?: { time?: string }): Date {
   return tags?.time ? new Date(tags.time) : new Date();
 }
 
+/** Cancels a pending connect for each client, so a dropped attempt can't register late. */
+const connectAborts = new WeakMap<Client, AbortController>();
+
+/** Closes the client's socket, or cancels its connect if the socket isn't open yet. */
 function safeDisconnect(client: Client): void {
+  connectAborts.get(client)?.abort();
   try {
     client.disconnect();
   } catch {
@@ -405,9 +410,12 @@ export class IrcManager {
         : {}),
     });
 
-    // Use node:net / node:tls adapter for reliable TLS on Bun
-    (client as unknown as { runtime: typeof nodeTlsRuntime }).runtime =
-      nodeTlsRuntime;
+    // Use node:net / node:tls adapter for reliable TLS on Bun. safeDisconnect aborts
+    // a connect that is still pending (e.g. after the connect timeout below).
+    const abort = new AbortController();
+    connectAborts.set(client, abort);
+    (client as unknown as { runtime: ReturnType<typeof createNodeRuntime> }).runtime =
+      createNodeRuntime(abort.signal);
 
     // Request IRCv3 draft/chathistory when advertised by server/bouncer (e.g. soju)
     if (!client.state.caps.requested.includes("draft/chathistory")) {
