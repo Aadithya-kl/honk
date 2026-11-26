@@ -5,7 +5,9 @@
 #    against a real https URL.
 # 2. Runs install.sh. A stand-in for curl/wget serves the release files from
 #    /rel instead of GitHub, so this works before a release exists.
-# 3. Checks that install.sh picked the right binary for this CPU and libc.
+# 3. Checks that install.sh picked the right binary for this CPU and libc, that
+#    honk --version names that build, that the install receipt is right, and
+#    that a broken .gz stops install.sh with a clear message.
 # 4. Runs `honk --demo` for a few seconds. The caller checks the screen output.
 #
 # Mounted: /install.sh (site/install.sh) and /rel (dist/: the .gz files and
@@ -55,7 +57,7 @@ while [ \$# -gt 0 ]; do
 	esac
 	shift
 done
-cp "/rel/\${url##*/}" "\$out"
+cp "\${HONK_TEST_REL:-/rel}/\${url##*/}" "\$out"
 EOF
 chmod +x /shim/*
 
@@ -91,6 +93,45 @@ if [ "$got_sum" != "$want_sum" ]; then
 	exit 1
 fi
 echo "PASS: install.sh installed $want"
+
+# The binary knows its build target, and honk upgrade downloads honk-<target>.gz,
+# so the target must match the file that was installed.
+target=${want#honk-}
+case "$(/root/.local/bin/honk --version)" in
+*"($target)"*) echo "PASS: honk --version reports $target" ;;
+*)
+	/root/.local/bin/honk --version
+	echo "FAIL: honk --version does not report $target"
+	exit 1
+	;;
+esac
+
+# The receipt tells honk upgrade which copy it may replace.
+receipt=/root/.local/state/honk/receipt.json
+if grep -q '"path": "/root/.local/bin/honk"' "$receipt" && grep -q "\"target\": \"$target\"" "$receipt"; then
+	echo "PASS: install.sh wrote the receipt"
+else
+	cat "$receipt" 2>/dev/null
+	echo "FAIL: the install receipt is missing or wrong"
+	exit 1
+fi
+
+# A .gz that matches its checksum but does not unpack: install.sh must stop
+# with its own message and leave the installed honk alone.
+mkdir -p /tmp/bad-rel
+echo "not gzip" >"/tmp/bad-rel/$want.gz"
+(cd /tmp/bad-rel && sha256sum "$want.gz") >/tmp/bad-rel/SHA256SUMS
+if HOME=/root HONK_TEST_REL=/tmp/bad-rel PATH="/shim:$PATH" sh /install.sh >/tmp/bad.log 2>&1; then
+	echo "FAIL: install.sh accepted a broken .gz"
+	exit 1
+fi
+if grep -q "could not unpack" /tmp/bad.log && [ "$(sha256sum /root/.local/bin/honk | cut -d ' ' -f 1)" = "$want_sum" ]; then
+	echo "PASS: a broken .gz stops install.sh and keeps the installed honk"
+else
+	cat /tmp/bad.log
+	echo "FAIL: wrong handling of a broken .gz"
+	exit 1
+fi
 
 # 4. The demo. After 6 seconds, timeout sends SIGTERM, and 4 seconds later
 #    SIGKILL if honk is still running. honk passes if it was still running at
