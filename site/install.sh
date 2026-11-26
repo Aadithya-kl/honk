@@ -44,7 +44,13 @@ download() { # download <url> <file>
 		curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
 			--retry 3 --output "$2" "$1"
 	elif command -v wget >/dev/null 2>&1; then
-		wget --https-only --quiet --output-document="$2" "$1"
+		# BusyBox wget (Alpine) has no --https-only. Our URLs are all https anyway;
+		# the flag only stops a redirect to http, so use it where it exists.
+		if wget --help 2>&1 | grep -q -- --https-only; then
+			wget --https-only -q -O "$2" "$1"
+		else
+			wget -q -O "$2" "$1"
+		fi
 	else
 		fail "this installer needs curl or wget"
 	fi
@@ -60,9 +66,35 @@ sha256_of() { # sha256_of <file>
 	fi
 }
 
+# True on Linux with musl libc (Alpine, Void musl...). Its dynamic loader is
+# /lib/ld-musl-<arch>.so.1, and its ldd prints "musl libc".
+is_musl() {
+	for loader in /lib/ld-musl-*.so.1; do
+		[ -e "$loader" ] && return 0
+	done
+	ldd --version 2>&1 | grep -qi musl
+}
+
+# The musl builds load the C++ runtime (libstdc++ and libgcc) at start, and
+# Alpine does not install it by default. Check before downloading 115 MB.
+check_musl_libs() {
+	for lib in libstdc++.so.6 libgcc_s.so.1; do
+		found=""
+		for dir in /lib /usr/lib /usr/local/lib; do
+			if [ -e "$dir/$lib" ]; then
+				found=1
+			fi
+		done
+		if [ -z "$found" ]; then
+			fail "honk needs libstdc++ and libgcc, which are not installed. On Alpine, run: apk add libstdc++ libgcc"
+		fi
+	done
+}
+
 detect_target() {
 	os=$(uname -s)
 	arch=$(uname -m)
+	libc=""
 
 	case "$os" in
 	Darwin)
@@ -75,8 +107,8 @@ detect_target() {
 		;;
 	Linux)
 		os=linux
-		if ldd --version 2>&1 | grep -qi musl; then
-			fail "Linux with musl libc (such as Alpine) is not supported yet"
+		if is_musl; then
+			libc=-musl
 		fi
 		;;
 	MINGW* | MSYS* | CYGWIN* | Windows_NT)
@@ -93,7 +125,7 @@ detect_target() {
 	*) fail "this CPU is not supported: $arch" ;;
 	esac
 
-	printf '%s-%s\n' "$os" "$arch"
+	printf '%s-%s%s\n' "$os" "$arch" "$libc"
 }
 
 print_path_help() { # print_path_help <dir>
@@ -119,6 +151,9 @@ print_path_help() { # print_path_help <dir>
 
 main() {
 	target=$(detect_target)
+	case "$target" in
+	*-musl) check_musl_libs ;;
+	esac
 	asset="honk-$target"
 	install_dir="${HONK_INSTALL_DIR:-$HOME/.local/bin}"
 

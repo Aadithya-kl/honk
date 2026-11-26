@@ -17,6 +17,12 @@ edits your shell config. Settings:
 - `HONK_VERSION=v0.1.0` installs that release instead of the latest one.
 - `HONK_INSTALL_DIR=~/bin` installs into another folder.
 
+On Alpine and other musl-based distros, honk needs the C++ runtime first:
+
+```sh
+apk add libstdc++ libgcc
+```
+
 ```sh
 curl -fsSL https://agustingianni.github.io/honk/install.sh | HONK_VERSION=v0.1.0 sh
 ```
@@ -29,7 +35,8 @@ Use `curl` rather than a browser: on macOS, a file downloaded in a browser is
 quarantined, and Gatekeeper blocks it because the binary is not signed.
 
 ```sh
-# Pick one: darwin-arm64 (Apple Silicon), darwin-x64, linux-x64, linux-arm64
+# Pick one: darwin-arm64 (Apple Silicon), darwin-x64, linux-x64, linux-arm64,
+# linux-x64-musl or linux-arm64-musl (Alpine and other musl-based distros)
 PLATFORM=darwin-arm64
 
 mkdir -p ~/.local/bin
@@ -115,6 +122,18 @@ bun run demo        # run the offline demo
 bun run typecheck
 bun run build       # binary for this machine in dist/honk
 bun run release     # binaries for every platform in dist/
+```
+
+## Testing on Linux
+
+`scripts/test-linux.sh` runs the Linux binaries and `install.sh` in Docker, on
+Alpine, Debian, Ubuntu, Fedora and Arch Linux, for x64 and arm64. In each
+container it installs honk with `install.sh` and runs `honk --demo`.
+
+```sh
+bun run release
+sh scripts/test-linux.sh               # every distro
+sh scripts/test-linux.sh alpine:3.20   # one image
 ```
 
 ## Releasing

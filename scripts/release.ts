@@ -3,7 +3,15 @@
 // `bun install` only fetches the one for this machine, so fetch them all first.
 import { $ } from "bun";
 
-const targets = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"];
+const targets = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-x64",
+  "linux-arm64",
+  // musl libc, for Alpine and other musl-based distros
+  "linux-x64-musl",
+  "linux-arm64-musl",
+];
 
 // The version that `honk --version` prints. In the release workflow, a tag push
 // sets GITHUB_REF_NAME to the tag, such as "v0.2.0". A local build describes the
@@ -24,11 +32,18 @@ await $`bun install --os=${all} --cpu=${all}`;
 await $`rm -rf dist`;
 
 for (const target of targets) {
+  // OpenTUI loads its musl native library only when OPENTUI_LIBC is "musl" at
+  // run time, and the glibc one otherwise, which fails on Alpine. Fix the value
+  // at build time for the musl targets.
+  const libc = target.endsWith("-musl")
+    ? ["--define", `process.env.OPENTUI_LIBC=${JSON.stringify("musl")}`]
+    : [];
   // --define puts these values into src/version.ts. Each value is JSON, so the
   // strings keep their quotes.
   await $`bun build src/index.tsx --compile --minify --target=bun-${target} \
     --define __HONK_VERSION__=${JSON.stringify(version)} \
     --define __HONK_TARGET__=${JSON.stringify(target)} \
+    ${libc} \
     --outfile dist/honk-${target}`;
 }
 
