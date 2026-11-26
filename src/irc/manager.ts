@@ -33,6 +33,23 @@ const BACKOFF_BASE_MS = 2_000;
 const BACKOFF_MAX_MS = 60_000;
 const WAKE_CHECK_INTERVAL_MS = 5_000;
 const WAKE_JUMP_THRESHOLD_MS = 15_000;
+/**
+ * How long a /join waits for the server's JOIN before it no longer takes focus. Some
+ * failures (a forward to another channel, 477, or no reply at all) have no reply we can
+ * match to the request.
+ */
+const REQUESTED_JOIN_TTL_MS = 30_000;
+/** Join failures. Their first argument after our nick is the channel. */
+const JOIN_ERRORS = new Set([
+  "err_nosuchchannel",
+  "err_toomanychannels",
+  "err_channelisfull",
+  "err_inviteonlychan",
+  "err_bannedfromchan",
+  "err_badchannelkey",
+  "err_badchanmask",
+  "err_badchanname",
+]);
 
 interface ServerControl {
   manualDisconnect: boolean;
@@ -219,8 +236,8 @@ export class IrcManager {
   private listeners = new Set<() => void>();
   private snapshot: StoreSnapshot = { servers: [], active: null };
   private wakeInterval: ReturnType<typeof setInterval> | null = null;
-  /** Channels the user asked to /join; the join switches to them. See joinKey. */
-  private requestedJoins = new Set<string>();
+  /** Channels the user asked to /join, with when the request expires. The join switches to them. See joinKey. */
+  private requestedJoins = new Map<string, number>();
   private lastWakeTick = Date.now();
 
   constructor() {
@@ -268,6 +285,21 @@ export class IrcManager {
       this.controls.set(serverId, ctrl);
     }
     return ctrl;
+  }
+
+  /** True (and forgets the request) if the user ran /join for this channel and it hasn't expired. */
+  private takeRequestedJoin(serverId: string, channel: string): boolean {
+    const key = joinKey(serverId, channel);
+    const expires = this.requestedJoins.get(key);
+    this.requestedJoins.delete(key);
+    return expires !== undefined && expires > Date.now();
+  }
+
+  private forgetRequestedJoins(serverId: string): void {
+    const prefix = joinKey(serverId, "");
+    for (const key of this.requestedJoins.keys()) {
+      if (key.startsWith(prefix)) this.requestedJoins.delete(key);
+    }
   }
 
   private clearServerTimers(ctrl: ServerControl): void {
@@ -534,6 +566,7 @@ export class IrcManager {
     ctrl.manualDisconnect = true;
     ctrl.registered = false;
     this.clearServerTimers(ctrl);
+    this.forgetRequestedJoins(serverId);
 
     const client = this.clients.get(serverId);
     this.clients.delete(serverId);
@@ -693,6 +726,7 @@ export class IrcManager {
       const ctrl = this.getControl(serverId);
 
       ctrl.registered = false;
+      this.forgetRequestedJoins(serverId);
       if (ctrl.stableTimer) {
         clearTimeout(ctrl.stableTimer);
         ctrl.stableTimer = null;
@@ -748,6 +782,10 @@ export class IrcManager {
         return;
       }
 
+      if (JOIN_ERRORS.has(msg.command) && msg.params.args[1]) {
+        this.requestedJoins.delete(joinKey(serverId, msg.params.args[1]));
+      }
+
       const detail = [msg.params.args.join(" "), msg.params.text]
         .filter(Boolean)
         .join(": ");
@@ -767,7 +805,7 @@ export class IrcManager {
       if (sameNick(who, server.nick)) {
         // Switch for a /join, or from this server's *status (auto-join at startup).
         // Auto-joins and reconnect re-joins never take focus from another buffer.
-        const requested = this.requestedJoins.delete(joinKey(serverId, channel));
+        const requested = this.takeRequestedJoin(serverId, channel);
         if (
           requested ||
           (this.active?.serverId === serverId && this.active.buffer === STATUS_BUFFER)
@@ -1410,11 +1448,27 @@ export class IrcManager {
       case "j":
       case "join": {
         if (!client || !server) return reply("Not connected.", "error");
-        const chan = args[0];
-        if (!chan) return reply("Usage: /join #channel", "error");
-        const target = isChannelName(chan) ? chan : `#${chan}`;
-        this.requestedJoins.add(joinKey(server.id, target));
-        client.join(target);
+        if (!args[0]) return reply("Usage: /join #channel[,#channel...] [key[,key...]]", "error");
+        // "/join #a,#b keyA": the server sends one JOIN per channel.
+        const keys = args[1]?.split(",") ?? [];
+        const targets = args[0]
+          .split(",")
+          .filter(Boolean)
+          .map((c) => (isChannelName(c) ? c : `#${c}`));
+        const descriptions = targets.map((target, i): string | [string, string] =>
+          keys[i] ? [target, keys[i]] : target,
+        );
+        if (descriptions.length === 0) return reply("Usage: /join #channel", "error");
+        const expires = Date.now() + REQUESTED_JOIN_TTL_MS;
+        for (const target of targets) {
+          // Already in it: the server sends no JOIN, so switch now.
+          if (server.buffers[this.bufferKey(server.id, target)]?.kind === "channel") {
+            this.setActive(server.id, target);
+          } else {
+            this.requestedJoins.set(joinKey(server.id, target), expires);
+          }
+        }
+        client.join(...(descriptions as [string, ...(string | [string, string])[]]));
         return;
       }
 
