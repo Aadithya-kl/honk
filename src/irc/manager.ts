@@ -932,7 +932,16 @@ export class IrcManager {
     client.on("privmsg", (msg) => onChat("message", msg));
     client.on("ctcp_action", (msg) => onChat("action", msg));
 
-    client.on("notice", (msg) => {
+    // With echo-message, the library reports our own lines (typed here, or sent from
+    // another client on the same bouncer account) as echo:* instead of privmsg/notice.
+    // onChat drops the echo of a line this client already showed.
+    client.on("echo:privmsg", (msg) => onChat("message", msg));
+
+    const onNotice = (msg: {
+      source?: { name?: string };
+      params: { target: string; text: string };
+      tags?: Record<string, string | undefined>;
+    }) => {
       if (isStale()) return;
       const from = normalizeNick(msg.source?.name) || "server";
       const target = isChannelName(msg.params.target)
@@ -948,7 +957,9 @@ export class IrcManager {
           isHistory: isHistoryBatch(msg.tags),
         }),
       );
-    });
+    };
+    client.on("notice", onNotice);
+    client.on("echo:notice", onNotice);
 
     client.on("whois_reply", (msg) => {
       if (isStale()) return;
@@ -1068,6 +1079,7 @@ export class IrcManager {
     const countsAsUnread =
       !isActive &&
       !message.isHistory &&
+      !message.isSelf &&
       (message.kind === "message" || message.kind === "action");
 
     server.buffers = {
