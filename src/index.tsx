@@ -1,6 +1,7 @@
 import { createCliRenderer, type CliRenderer } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { App } from "./App.tsx";
+import { cliAction, HELP, unknownCommandText } from "./cli.ts";
 import { loadConfig } from "./config.ts";
 import { IrcManager } from "./irc/manager.ts";
 import { startUpdateCheck } from "./updateCheck.ts";
@@ -8,13 +9,22 @@ import { runUpgrade } from "./upgrade.ts";
 import { versionLine } from "./version.ts";
 
 // Answer before reading the config or taking over the terminal.
-const args = process.argv.slice(2);
-if (args.includes("--version") || args.includes("-v")) {
-  console.log(versionLine());
-  process.exit(0);
-}
-if (args[0] === "upgrade") {
-  process.exit(await runUpgrade());
+const action = cliAction(process.argv.slice(2));
+switch (action.kind) {
+  case "help":
+    console.log(HELP);
+    process.exit(0);
+  case "version":
+    console.log(versionLine());
+    process.exit(0);
+  case "upgrade":
+    process.exit(await runUpgrade());
+  case "unknown":
+    // A typo such as "honk upgarde" would otherwise start the client.
+    console.error(unknownCommandText(action.word));
+    process.exit(2);
+  case "run":
+    break;
 }
 
 interface HotState {
