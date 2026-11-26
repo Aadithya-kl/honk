@@ -554,6 +554,11 @@ export class IrcManager {
       password: cfg.password,
       serverPassword: cfg.serverPassword,
       authMethod: cfg.authMethod ?? (cfg.password ? "sasl" : undefined),
+      // No automatic CTCP replies. Each request would get a NOTICE back with no rate
+      // limit, so a burst of requests from many users makes the server drop us for
+      // flooding ("RecvQ exceeded"). TIME also gives away the local time. /me (ACTION)
+      // and the server's PING/PONG keepalive don't use this option.
+      ctcpReplies: { version: false, time: false, ping: false, clientinfo: false },
       ...(channelsToJoin.length > 0
         ? { channels: channelsToJoin as [string, ...string[]] }
         : {}),
