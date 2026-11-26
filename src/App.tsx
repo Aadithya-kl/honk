@@ -58,6 +58,10 @@ export function App({ manager }: AppProps) {
     (serverId: string, nick: string) => manager.openDm(serverId, nick),
     [manager],
   );
+  const pasteLines = useCallback(
+    (lines: string[]) => manager.sendLines(lines),
+    [manager],
+  );
   const closeOmnibox = useCallback(() => setOmniboxOpen(false), []);
   const toggleSidebar = useCallback(() => setSidebarOpen((v) => !v), []);
   const toggleNicklist = useCallback(() => setNicklistOpen((v) => !v), []);
@@ -139,6 +143,7 @@ export function App({ manager }: AppProps) {
           inputFocused={!omniboxOpen}
           paneWidth={chatWidth}
           onSubmit={submit}
+          onPasteLines={pasteLines}
         />
 
         {showNicklist && (

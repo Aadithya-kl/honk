@@ -23,6 +23,8 @@ import { createNodeRuntime } from "./runtime.ts";
 const MAX_MESSAGES = 500;
 /** Hard cap once history (/history, CHATHISTORY playback) has grown a buffer past MAX_MESSAGES. */
 const MAX_MESSAGES_WITH_HISTORY = 5000;
+/** A paste with more lines than this is refused, so a wrong paste can't flood a channel. */
+const MAX_PASTE_LINES = 10;
 
 // Reconnect & health tuning
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -1259,8 +1261,34 @@ export class IrcManager {
     if (trimmed.startsWith("/")) {
       return this.handleCommand(trimmed.slice(1));
     }
+    this.sendText(raw);
+  }
 
+  /**
+   * Sends pasted lines to the active buffer, one message each. A line that starts with
+   * "/" is sent as text, not run as a command.
+   */
+  sendLines(lines: string[]): void {
     if (!this.active) return;
+    if (lines.length > MAX_PASTE_LINES) {
+      this.pushMessage(
+        this.active.serverId,
+        this.active.buffer,
+        makeMessage(
+          "error",
+          `The paste has ${lines.length} lines; at most ${MAX_PASTE_LINES} are sent at once. Nothing was sent.`,
+        ),
+      );
+      return;
+    }
+    for (const line of lines) {
+      if (!this.sendText(line)) return;
+    }
+  }
+
+  /** Sends one message to the active buffer. False (with an error shown) if it can't. */
+  private sendText(raw: string): boolean {
+    if (!raw.trim() || !this.active) return false;
     const { serverId, buffer } = this.active;
     const server = this.servers.get(serverId);
     const client = this.clients.get(serverId);
@@ -1275,7 +1303,7 @@ export class IrcManager {
             : "Not connected. Use /connect <host> [port] [nick].",
         ),
       );
-      return;
+      return false;
     }
 
     if (buffer === STATUS_BUFFER) {
@@ -1284,7 +1312,7 @@ export class IrcManager {
         buffer,
         makeMessage("system", "Join a channel first with /join #channel"),
       );
-      return;
+      return false;
     }
 
     client.privmsg(buffer, raw);
@@ -1294,6 +1322,7 @@ export class IrcManager {
       buffer,
       makeMessage("message", raw, { from: server.nick, isSelf: true }),
     );
+    return true;
   }
 
   private handleCommand(line: string): "quit" | void {

@@ -1,5 +1,5 @@
 import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, usePaste } from "@opentui/react";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { sameNick, STATUS_BUFFER } from "../irc/names.ts";
 import { nickColor, theme } from "../theme.ts";
@@ -14,6 +14,8 @@ interface ChatPaneProps {
   inputFocused: boolean;
   paneWidth: number;
   onSubmit: (value: string) => void;
+  /** A paste of several lines: each line is sent as its own message. */
+  onPasteLines: (lines: string[]) => void;
 }
 
 const NICK_COL_WIDTH = 12;
@@ -167,7 +169,14 @@ const MessageRow = memo(function MessageRow({
   );
 });
 
-export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: ChatPaneProps) {
+export function ChatPane({
+  server,
+  buffer,
+  inputFocused,
+  paneWidth,
+  onSubmit,
+  onPasteLines,
+}: ChatPaneProps) {
   const inputRef = useRef<InputRenderable>(null);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const [inputValue, setInputValue] = useState("");
@@ -264,6 +273,20 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
         setInputText(draftRef.current);
       }
     }
+  });
+
+  // A paste with line breaks: the input is one line and would glue the lines together,
+  // so each line is sent as its own message. Text already typed starts the first line.
+  usePaste((event) => {
+    if (!inputFocused) return;
+    const text = new TextDecoder().decode(event.bytes).replace(/\r\n?/g, "\n");
+    if (!text.includes("\n")) return;
+    event.preventDefault();
+    const typed = inputRef.current?.value ?? inputValue;
+    const lines = (typed + text).split("\n").filter((l) => l.trim() !== "");
+    setInputText("");
+    if (lines.length > 0) onPasteLines(lines);
+    scrollRef.current?.scrollTo(scrollRef.current.scrollHeight);
   });
 
   // "New messages below": the id of the last line on screen when the view left the
