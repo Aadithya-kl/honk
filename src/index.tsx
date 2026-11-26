@@ -43,6 +43,15 @@ if (!g.__ircHot) {
   });
   const root = createRoot(renderer);
 
+  // On SIGTERM or SIGHUP (kill, a closed terminal, a dropped SSH session),
+  // OpenTUI catches the signal and shuts the renderer down. Catching it stops the
+  // normal exit, and the IRC sockets and timers would keep honk running unseen.
+  // Quit as /quit does, once the terminal is restored.
+  renderer.on("destroy", () => {
+    manager.disconnectAll();
+    void renderer.closed.finally(() => process.exit(0));
+  });
+
   g.__ircHot = { renderer, root, manager, version: 0 };
 }
 
