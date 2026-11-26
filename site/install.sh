@@ -218,7 +218,9 @@ main() {
 		fail "checksum mismatch for $asset (expected $expected, got $actual)"
 	fi
 	say "checksum OK"
-	gzip -dc "$tmp/$asset" >"$tmp/$binary"
+	if ! gzip -dc "$tmp/$asset" >"$tmp/$binary" 2>/dev/null; then
+		fail "could not unpack $asset. Its checksum matches, so the release itself is broken: please report it at https://github.com/$REPO/issues"
+	fi
 
 	# The attestation covers the unpacked binary too, so `gh attestation verify`
 	# also works later on the installed file.
