@@ -1,23 +1,5 @@
+import { SLASH_COMMANDS } from "../irc/commands.ts";
 import type { ChatMessage, NickEntry } from "../types.ts";
-
-const SLASH_COMMANDS = [
-  "connect",
-  "disconnect",
-  "join",
-  "part",
-  "msg",
-  "query",
-  "me",
-  "nick",
-  "topic",
-  "whois",
-  "raw",
-  "clear",
-  "demo",
-  "history",
-  "help",
-  "quit",
-] as const;
 
 interface CompletionContext {
   users: NickEntry[];
@@ -92,7 +74,7 @@ export function getCompletions(
   // 1. Slash command at start of line
   if (before === "" && token.startsWith("/")) {
     const q = token.slice(1);
-    const matches = rankCandidates(q, [...SLASH_COMMANDS]);
+    const matches = rankCandidates(q, SLASH_COMMANDS.map((c) => c.name));
     return matches.map((cmd) => `/${cmd} `);
   }
 

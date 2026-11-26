@@ -1,6 +1,8 @@
 import { useKeyboard } from "@opentui/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { nickColor, theme } from "../theme.ts";
+import { findSlashCommand, needsArgs, SLASH_COMMANDS } from "../irc/commands.ts";
+import { sameNick } from "../irc/names.ts";
 import type { ActiveBuffer, ServerState } from "../types.ts";
 import { bufferDisplayName, truncate, unreadBadge } from "./display.ts";
 
@@ -14,7 +16,7 @@ interface OmniboxItem {
   hint?: string;
   /** Runs before the omnibox closes. */
   onSelect: () => void;
-  /** Keep the omnibox open after selecting (used by the "?" help items). */
+  /** Keep the omnibox open after selecting (items that change the query, like "?" help). */
   keepOpen?: boolean;
 }
 
@@ -30,6 +32,10 @@ interface OmniboxProps {
   onToggleSidebar: () => void;
   onToggleNicklist: () => void;
 }
+
+const MAX_RESULTS = 10;
+/** How far back the active buffer is read to rank recent speakers first in "@" mode. */
+const RECENT_SPEAKER_SCAN = 300;
 
 function fuzzyScore(query: string, target: string): number {
   const q = query.toLowerCase();
@@ -55,6 +61,50 @@ function fuzzyScore(query: string, target: string): number {
   return qi === q.length ? score : -1;
 }
 
+interface KnownUser {
+  serverId: string;
+  serverName: string;
+  nick: string;
+  /** An open DM buffer with this user. */
+  hasDm: boolean;
+}
+
+/** Every user in a channel or an open DM, once per server, without yourself. */
+function collectUsers(servers: ServerState[]): KnownUser[] {
+  const users = new Map<string, KnownUser>();
+  for (const s of servers) {
+    for (const bufName of s.bufferOrder) {
+      const buf = s.buffers[bufName];
+      if (!buf) continue;
+      const nicks = buf.kind === "dm" ? [buf.name] : buf.users.map((u) => u.nick);
+      for (const nick of nicks) {
+        if (sameNick(nick, s.nick)) continue;
+        const key = `${s.id}:${nick.toLowerCase()}`;
+        const known = users.get(key);
+        if (known) {
+          if (buf.kind === "dm") known.hasDm = true;
+          continue;
+        }
+        users.set(key, { serverId: s.id, serverName: s.name, nick, hasDm: buf.kind === "dm" });
+      }
+    }
+  }
+  return [...users.values()];
+}
+
+/** Fits a row into `width` columns: the label keeps at least half, then the detail is cut. */
+function fitRow(item: OmniboxItem, width: number): { label: string; detail?: string } {
+  const extras =
+    (item.hint ? item.hint.length + 1 : 0) + (item.badge ? item.badge.length + 1 : 0);
+  const room = Math.max(4, width - extras);
+  const detailWanted = item.detail ? item.detail.length + 2 : 0;
+  const labelMax = Math.max(room - detailWanted, Math.min(item.label.length, Math.ceil(room / 2)));
+  const label = truncate(item.label, labelMax);
+  const detailRoom = room - label.length - 2;
+  const detail = item.detail && detailRoom >= 4 ? truncate(item.detail, detailRoom) : undefined;
+  return { label, detail };
+}
+
 export function Omnibox({
   servers,
   active,
@@ -76,183 +126,263 @@ export function Omnibox({
     ? servers.find((s) => s.id === active.serverId)
     : servers[0];
 
-  const items = useMemo<OmniboxItem[]>(() => {
+  /** `more`: matches left out of the list, so the user knows to type more. */
+  const { items, more } = useMemo<{ items: OmniboxItem[]; more: number }>(() => {
     const trimmed = query.trimStart();
+    const top = (list: OmniboxItem[]) => ({
+      items: list.slice(0, MAX_RESULTS),
+      more: Math.max(0, list.length - MAX_RESULTS),
+    });
+    // The action and slash command lists are short and fixed: show them whole.
+    const all = (list: OmniboxItem[]) => ({ items: list, more: 0 });
 
-    // ? — VS Code-style mode help
+    // ? -- mode help, as in VS Code
     if (trimmed === "?") {
-      return [
-        {
-          id: "help-buffers",
-          label: "(no prefix)",
-          labelColor: theme.accent,
-          detail: "Quick open channels & DMs across all servers",
-          onSelect: () => setQuery(""),
-          keepOpen: true,
-        },
-        {
-          id: "help-cmd",
-          label: ">",
-          labelColor: theme.yellow,
-          detail: "Run a command (sidebar, users, clear, disconnect, quit…)",
-          onSelect: () => setQuery(">"),
-          keepOpen: true,
-        },
-        {
-          id: "help-users",
-          label: "@",
-          labelColor: theme.accentAlt,
-          detail: "Find a user and open a DM",
-          onSelect: () => setQuery("@"),
-          keepOpen: true,
-        },
-        {
-          id: "help-channels",
-          label: "#",
-          labelColor: theme.cyan,
-          detail: "Filter channels or join a new #channel",
-          onSelect: () => setQuery("#"),
-          keepOpen: true,
-        },
-      ];
+      const mode = (id: string, label: string, color: string, detail: string, next: string) => ({
+        id,
+        label,
+        labelColor: color,
+        detail,
+        onSelect: () => setQuery(next),
+        keepOpen: true,
+      });
+      return top([
+        mode("help-buffers", "(no prefix)", theme.accent, "Jump to a channel, DM or user", ""),
+        mode("help-cmd", ">", theme.yellow, "Run an action (part, nick, topic, quit...)", ">"),
+        mode("help-slash", "/", theme.cyan, "Run a slash command, with its usage shown", "/"),
+        mode("help-users", "@", theme.accentAlt, "Find a user and open a DM", "@"),
+        mode("help-channels", "#", theme.cyan, "Filter channels or join a new #channel", "#"),
+      ]);
     }
 
-    // > — Command Palette mode
+    // / -- slash commands, also reachable as "> /..."
+    const slash = trimmed.startsWith("/")
+      ? trimmed
+      : trimmed.startsWith(">") && trimmed.slice(1).trimStart().startsWith("/")
+        ? trimmed.slice(1).trimStart()
+        : null;
+    if (slash !== null) {
+      const [word = "", ...restWords] = slash.slice(1).split(" ");
+      const known = findSlashCommand(word);
+      // Arguments typed (or started): one item that runs the line as typed.
+      if (restWords.length > 0) {
+        return top([
+          {
+            id: "slash-run",
+            label: `Run ${slash.trimEnd()}`,
+            labelColor: theme.cyan,
+            detail: known ? `/${known.name} ${known.args ?? ""}`.trimEnd() : "unknown command",
+            onSelect: () => onRunCommand(slash),
+          },
+        ]);
+      }
+      const matches = SLASH_COMMANDS.map((cmd) => ({ cmd, score: fuzzyScore(word, cmd.name) }))
+        .filter((x) => x.score >= 0)
+        .sort((a, b) => b.score - a.score)
+        .map(({ cmd }): OmniboxItem => ({
+          id: `slash-${cmd.name}`,
+          label: cmd.args ? `/${cmd.name} ${cmd.args}` : `/${cmd.name}`,
+          labelColor: theme.cyan,
+          detail: cmd.summary,
+          // A command that needs arguments fills the query, so the user types them next.
+          onSelect: needsArgs(cmd)
+            ? () => setQuery(`/${cmd.name} `)
+            : () => onRunCommand(`/${cmd.name}`),
+          keepOpen: needsArgs(cmd),
+        }));
+      if (matches.length === 0 && word) {
+        matches.push({
+          id: "slash-run",
+          label: `Run ${slash}`,
+          labelColor: theme.cyan,
+          detail: "unknown command",
+          onSelect: () => onRunCommand(slash),
+        });
+      }
+      return all(matches);
+    }
+
+    // > -- command palette: actions that fit the current buffer and server
     if (trimmed.startsWith(">")) {
       const q = trimmed.slice(1).trim();
-      const commands: OmniboxItem[] = [
-        {
-          id: "cmd-sidebar",
-          label: "View: Toggle Sidebar",
-          hint: "^B",
-          onSelect: () => onToggleSidebar(),
-        },
+      const buf = activeServer && active ? activeServer.buffers[active.buffer] : undefined;
+      const fill = (next: string) => ({ onSelect: () => setQuery(next), keepOpen: true });
+      const status = activeServer?.status;
+      const online = status === "connected" || status === "connecting" || status === "reconnecting";
+      const commands: OmniboxItem[] = [];
+      const add = (...list: OmniboxItem[]) => commands.push(...list);
+
+      add(
+        { id: "cmd-join", label: "Channel: Join a Channel...", hint: "#", ...fill("#") },
+        { id: "cmd-dm", label: "User: Open a DM...", hint: "@", ...fill("@") },
+      );
+      if (buf?.kind === "channel" && active) {
+        add(
+          {
+            id: "cmd-topic",
+            label: "Channel: Set Topic...",
+            detail: active.buffer,
+            ...fill("/topic "),
+          },
+          {
+            id: "cmd-part",
+            label: `Channel: Part ${active.buffer}`,
+            detail: activeServer?.name,
+            onSelect: () => onRunCommand(`/part ${active.buffer}`),
+          },
+        );
+      }
+      if (buf?.kind === "dm" && active) {
+        add(
+          {
+            id: "cmd-whois",
+            label: `User: Whois ${active.buffer}`,
+            onSelect: () => onRunCommand(`/whois ${active.buffer}`),
+          },
+          {
+            id: "cmd-close-dm",
+            label: `User: Close DM with ${active.buffer}`,
+            onSelect: () => onRunCommand("/part"),
+          },
+        );
+      }
+      if (buf && buf.kind !== "status") {
+        add({
+          id: "cmd-history",
+          label: "Chat: Load Older Messages",
+          detail: "/history",
+          onSelect: () => onRunCommand("/history"),
+        });
+      }
+      add({
+        id: "cmd-clear",
+        label: "Chat: Clear Buffer",
+        detail: active?.buffer,
+        onSelect: () => onRunCommand("/clear"),
+      });
+      add(
+        { id: "cmd-sidebar", label: "View: Toggle Sidebar", hint: "^B", onSelect: onToggleSidebar },
         {
           id: "cmd-nicklist",
           label: "View: Toggle User List",
-          hint: "^U",
-          onSelect: () => onToggleNicklist(),
+          hint: "Alt+U",
+          onSelect: onToggleNicklist,
         },
-        {
-          id: "cmd-clear",
-          label: "Chat: Clear Active Buffer",
-          detail: active?.buffer,
-          onSelect: () => onRunCommand("/clear"),
-        },
-        ...(activeServer && active && activeServer.buffers[active.buffer]?.kind === "channel"
-          ? [
-              {
-                id: "cmd-part",
-                label: `Channel: Part ${active.buffer}`,
-                detail: activeServer.name,
-                onSelect: () => onRunCommand(`/part ${active.buffer}`),
-              },
-            ]
-          : []),
-        ...(activeServer?.config.host
-          ? [
-              {
-                id: "cmd-reconnect",
-                label: `Server: Reconnect ${activeServer.name}`,
-                onSelect: () => onRunCommand("/connect"),
-              },
-              {
-                id: "cmd-disconnect",
-                label: `Server: Disconnect ${activeServer.name}`,
-                onSelect: () => onRunCommand("/disconnect"),
-              },
-            ]
-          : []),
-        {
-          id: "cmd-help",
-          label: "IRC: Show Slash Commands",
-          detail: "/help",
-          onSelect: () => onRunCommand("/help"),
-        },
-        {
-          id: "cmd-quit",
-          label: "App: Quit",
-          hint: "^C",
-          onSelect: () => onRunCommand("/quit"),
-        },
-      ];
-
-      const scored = commands
-        .map((item) => ({
-          item,
-          score: fuzzyScore(q, `${item.label} ${item.detail ?? ""}`),
-        }))
-        .filter((x) => x.score >= 0)
-        .sort((a, b) => b.score - a.score)
-        .map((x) => x.item);
-
-      // If user typed a slash command like "> /connect ..."
-      if (q.startsWith("/")) {
-        scored.unshift({
-          id: `cmd-raw-${q}`,
-          label: `Run ${q}`,
-          labelColor: theme.cyan,
-          onSelect: () => onRunCommand(q),
+      );
+      if (activeServer && online) {
+        add({
+          id: "cmd-nick",
+          label: "Server: Change Nick...",
+          detail: activeServer.nick,
+          ...fill("/nick "),
         });
       }
-
-      return scored.slice(0, 10);
-    }
-
-    // @ — User / DM switcher mode
-    if (trimmed.startsWith("@")) {
-      const q = trimmed.slice(1).trim();
-      const seen = new Set<string>();
-      const users: { serverId: string; serverName: string; nick: string; score: number }[] = [];
-
-      for (const s of servers) {
-        for (const bufName of s.bufferOrder) {
-          const buf = s.buffers[bufName];
-          if (!buf) continue;
-          const myLower = s.nick.toLowerCase();
-          for (const u of buf.users) {
-            if (u.nick.toLowerCase() === myLower) continue;
-            const key = `${s.id}:${u.nick.toLowerCase()}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            const score = fuzzyScore(q, `${u.nick} ${s.name}`);
-            if (score < 0) continue;
-            users.push({ serverId: s.id, serverName: s.name, nick: u.nick, score });
-          }
+      if (activeServer?.config.host) {
+        add({
+          id: "cmd-reconnect",
+          label: `Server: ${online ? "Reconnect" : "Connect"} ${activeServer.name}`,
+          onSelect: () => onRunCommand("/connect"),
+        });
+        if (online) {
+          add({
+            id: "cmd-disconnect",
+            label: `Server: Disconnect ${activeServer.name}`,
+            onSelect: () => onRunCommand("/disconnect"),
+          });
         }
       }
+      add(
+        { id: "cmd-connect", label: "Server: Connect to a New Server...", ...fill("/connect ") },
+        { id: "cmd-slash", label: "IRC: Slash Commands...", hint: "/", ...fill("/") },
+        { id: "cmd-quit", label: "App: Quit", hint: "^C", onSelect: () => onRunCommand("/quit") },
+      );
 
-      users.sort((a, b) => b.score - a.score);
-      const list = users.slice(0, 10).map(
-        (u): OmniboxItem => ({
+      return all(
+        commands
+          .map((item) => ({ item, score: fuzzyScore(q, `${item.label} ${item.detail ?? ""}`) }))
+          .filter((x) => x.score >= 0)
+          .sort((a, b) => b.score - a.score)
+          .map((x) => x.item),
+      );
+    }
+
+    // @ -- find a user and open a DM
+    if (trimmed.startsWith("@")) {
+      const q = trimmed.slice(1).trim();
+      // Recent speakers in the buffer you are in, newest first.
+      const recentSpeakers = new Map<string, number>();
+      const activeBuf = active ? activeServer?.buffers[active.buffer] : undefined;
+      const msgs = activeBuf?.messages ?? [];
+      for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - RECENT_SPEAKER_SCAN); i--) {
+        const from = msgs[i]!.from?.toLowerCase();
+        if (from && !recentSpeakers.has(from)) recentSpeakers.set(from, recentSpeakers.size);
+      }
+
+      const here =
+        activeBuf?.kind === "channel"
+          ? new Set(activeBuf.users.map((u) => u.nick.toLowerCase()))
+          : new Set<string>();
+      const inThisDm = (u: KnownUser) =>
+        activeBuf?.kind === "dm" &&
+        u.serverId === active?.serverId &&
+        sameNick(u.nick, activeBuf.name);
+
+      const users = collectUsers(servers)
+        .map((u) => {
+          let score = fuzzyScore(q, `${u.nick} ${u.serverName}`);
+          if (score >= 0 && !q) {
+            // People you talk with first: open DMs, then who spoke here lately,
+            // then the rest of this channel. The DM you are in goes last.
+            const lower = u.nick.toLowerCase();
+            const sameServer = u.serverId === active?.serverId;
+            if (inThisDm(u)) {
+              score -= 10_000;
+            } else if (u.hasDm) {
+              const dmKey = `${u.serverId}:${lower}`;
+              const recIdx = recentKeys.findIndex((k) => k.toLowerCase() === dmKey);
+              score += 3000 - (recIdx === -1 ? 50 : recIdx);
+            }
+            const spoke = sameServer ? recentSpeakers.get(lower) : undefined;
+            if (spoke !== undefined) score += 2000 - spoke;
+            else if (sameServer && here.has(lower)) score += 1000;
+          }
+          return { u, score };
+        })
+        .filter((x) => x.score >= 0)
+        .sort((a, b) => b.score - a.score || a.u.nick.localeCompare(b.u.nick));
+
+      const list = users.map(
+        ({ u }): OmniboxItem => ({
           id: `user-${u.serverId}:${u.nick.toLowerCase()}`,
-          label: `@${u.nick}`,
+          label: u.nick,
           labelColor: nickColor(u.nick),
-          detail: u.serverName,
+          detail: u.hasDm ? `has a DM, ${u.serverName}` : u.serverName,
           onSelect: () => onOpenDm(u.serverId, u.nick),
         }),
       );
 
-      if (q && activeServer && !q.includes(" ")) {
-        const exact = list.some(
-          (i) => i.label.toLowerCase() === `@${q.toLowerCase()}`,
-        );
+      const result = top(list);
+      // A nick nobody shares a channel with: offer a new DM anyway.
+      if (q && activeServer && !q.includes(" ") && !sameNick(q, activeServer.nick)) {
+        const exact = users.some(({ u }) => u.serverId === activeServer.id && sameNick(u.nick, q));
         if (!exact) {
-          list.push({
+          result.items.push({
             id: `dm-new-${q}`,
-            label: `Message @${q}`,
+            label: `Message ${q}`,
             labelColor: theme.accentAlt,
-            detail: activeServer.name,
+            detail: `new DM, ${activeServer.name}`,
             onSelect: () => onOpenDm(activeServer.id, q),
           });
         }
       }
-      return list;
+      return result;
     }
 
-    // Default (or #) — Quick Open buffers across all servers
+    // Default (or #) -- quick open buffers across all servers
     const channelOnly = trimmed.startsWith("#");
     const q = trimmed;
+    // "#" alone ranks like an empty query: what needs you first, the current buffer last.
+    const browsing = !q || q === "#";
     const candidates: { item: OmniboxItem; score: number }[] = [];
 
     for (const s of servers) {
@@ -266,13 +396,15 @@ export function Omnibox({
         const baseScore = fuzzyScore(q, `${displayName} ${s.name}`);
         if (baseScore < 0) continue;
 
-        // Boost mentions, unreads, and recently visited buffers when query is empty
+        // Boost mentions, unreads, and recently visited buffers when browsing
         let boost = 0;
-        if (!q) {
+        if (browsing) {
           if (buf.hasMention) boost += 400;
           else if (buf.unread > 0) boost += 200 + Math.min(buf.unread, 50);
           const recIdx = recentKeys.indexOf(key);
           if (recIdx !== -1) boost += 100 - recIdx;
+          // The buffer you are in goes last, so Ctrl+K then Enter goes back to the previous one.
+          if (active?.serverId === s.id && active.buffer === bufName) boost -= 10_000;
         }
 
         candidates.push({
@@ -296,13 +428,29 @@ export function Omnibox({
     }
 
     candidates.sort((a, b) => b.score - a.score);
-    const list = candidates.slice(0, 10).map((x) => x.item);
+    const found = candidates.map((x) => x.item);
+
+    // A typed name that is a user, not a buffer: offer a DM with them, after the buffers.
+    if (!channelOnly && q && !q.includes(" ")) {
+      const lower = q.toLowerCase();
+      for (const u of collectUsers(servers)) {
+        if (u.hasDm || !u.nick.toLowerCase().includes(lower)) continue;
+        found.push({
+          id: `user-${u.serverId}:${u.nick.toLowerCase()}`,
+          label: `@${u.nick}`,
+          labelColor: nickColor(u.nick),
+          detail: `user, ${u.serverName}`,
+          onSelect: () => onOpenDm(u.serverId, u.nick),
+        });
+      }
+    }
+    const result = top(found);
 
     // If user typed #newchannel not yet joined, offer to join it
     if (channelOnly && q.length > 1 && !q.includes(" ") && activeServer) {
-      const alreadyJoined = Boolean(activeServer.buffers[q]);
+      const alreadyJoined = activeServer.bufferOrder.some((b) => sameNick(b, q));
       if (!alreadyJoined) {
-        list.push({
+        result.items.push({
           id: `join-${q}`,
           label: `+ Join ${q}`,
           labelColor: theme.green,
@@ -312,14 +460,13 @@ export function Omnibox({
       }
     }
 
-    return list;
+    return result;
   }, [
     query,
     servers,
     active,
     activeServer,
     recentKeys,
-    onClose,
     onSelectBuffer,
     onOpenDm,
     onRunCommand,
@@ -333,10 +480,17 @@ export function Omnibox({
 
   const foundIndex = items.findIndex((item) => item.id === selectedId);
   const selectedIndex = foundIndex === -1 ? 0 : foundIndex;
+  // Several keys can arrive before React re-renders, so each move starts from the
+  // previous move's result (the updater's `prev`), not from this render's selection.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const moveSelection = (delta: 1 | -1) => {
-    if (items.length === 0) return;
-    const next = items[(selectedIndex + delta + items.length) % items.length];
-    setSelectedId(next?.id ?? null);
+    setSelectedId((prev) => {
+      const list = itemsRef.current;
+      if (list.length === 0) return prev;
+      const at = Math.max(0, list.findIndex((item) => item.id === prev));
+      return list[(at + delta + list.length) % list.length]?.id ?? null;
+    });
   };
 
   useKeyboard((key) => {
@@ -356,6 +510,8 @@ export function Omnibox({
 
   const modalWidth = Math.min(64, Math.max(36, width - 6));
   const leftOffset = Math.max(0, Math.floor((width - modalWidth) / 2));
+  // Border (2), the selection marker and its space (2), right padding (1).
+  const rowWidth = modalWidth - 5;
 
   const select = (item: OmniboxItem | undefined) => {
     item?.onSelect();
@@ -391,7 +547,7 @@ export function Omnibox({
           flexGrow={1}
           focused
           value={query}
-          placeholder="Jump to buffer… (> commands, @ users, # join, ? help)"
+          placeholder="Jump to buffer… (> actions, / commands, @ users, ? help)"
           backgroundColor={theme.bgInput}
           textColor={theme.fgBright}
           placeholderColor={theme.fgMuted}
@@ -409,7 +565,7 @@ export function Omnibox({
         ) : (
           items.map((item, idx) => {
             const isSel = idx === selectedIndex;
-            const maxLabel = modalWidth - 20;
+            const { label, detail } = fitRow(item, rowWidth);
             return (
               <box
                 key={item.id}
@@ -426,18 +582,12 @@ export function Omnibox({
                   </span>
                   <span fg={item.labelColor ?? theme.fgPrimary}>
                     {" "}
-                    {isSel ? (
-                      <strong>{truncate(item.label, maxLabel)}</strong>
-                    ) : (
-                      truncate(item.label, maxLabel)
-                    )}
+                    {isSel ? <strong>{label}</strong> : label}
                   </span>
                 </text>
 
                 <text>
-                  {item.detail ? (
-                    <span fg={theme.fgMuted}>{item.detail}</span>
-                  ) : null}
+                  {detail ? <span fg={theme.fgMuted}>{detail}</span> : null}
                   {item.hint ? (
                     <span fg={theme.cyan}> {item.hint}</span>
                   ) : null}
@@ -452,6 +602,11 @@ export function Omnibox({
             );
           })
         )}
+        {more > 0 ? (
+          <box height={1} paddingLeft={2}>
+            <text fg={theme.fgMuted}>{`${more} more, type to narrow the list`}</text>
+          </box>
+        ) : null}
       </box>
     </box>
   );

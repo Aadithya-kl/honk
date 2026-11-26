@@ -17,6 +17,7 @@ import {
   sameNick,
   STATUS_BUFFER,
 } from "./names.ts";
+import { SLASH_COMMANDS } from "./commands.ts";
 import { createNodeRuntime } from "./runtime.ts";
 
 /** Messages kept per buffer from live traffic. */
@@ -1465,9 +1466,10 @@ export class IrcManager {
 
     switch (cmd) {
       case "help": {
-        reply(
-          "Commands: /connect <host> [port|+tlsport] [nick] | /disconnect | /join #chan | /part [msg] | /msg <nick> <text> | /me <action> | /nick <new> | /topic [text] | /whois <nick> | /clear | /quit",
-        );
+        const list = SLASH_COMMANDS.filter((c) => c.name !== "demo")
+          .map((c) => (c.args ? `/${c.name} ${c.args}` : `/${c.name}`))
+          .join(" | ");
+        reply(`Commands: ${list}. Press Ctrl+K for the omnibox.`);
         return;
       }
 
