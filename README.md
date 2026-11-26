@@ -182,13 +182,16 @@ sh scripts/test-linux.sh alpine:3.20   # one image
 
 ## Releasing
 
-Push a tag. The release workflow builds the binaries, runs
-`scripts/test-linux.sh` on an x64 and an arm64 runner, and only if every
-distro passes, signs the binaries and attaches them to a GitHub release.
+Set `"version"` in `package.json` to the new version and commit it. Then push a
+tag with the same version and a `v` in front. The release workflow builds the
+binaries, runs `scripts/test-linux.sh` on an x64 and an arm64 runner, and only
+if every distro passes, signs the binaries and attaches them to a GitHub
+release. It stops right away if the tag and `package.json` do not match.
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+# package.json has "version": "0.2.0"
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 ## License

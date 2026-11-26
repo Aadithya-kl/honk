@@ -2,6 +2,7 @@
 // OpenTUI ships its native code in one package per platform, and a normal
 // `bun install` only fetches the one for this machine, so fetch them all first.
 import { $ } from "bun";
+import pkg from "../package.json";
 
 const targets = [
   "darwin-arm64",
@@ -16,9 +17,22 @@ const targets = [
 // The version that `honk --version` prints. In the release workflow, a tag push
 // sets GITHUB_REF_NAME to the tag, such as "v0.2.0". A local build describes the
 // commit instead, such as "v0.1.0-3-gabc1234-dirty".
+//
+// A release tag must match the version in package.json: tag v0.2.0 needs
+// "version": "0.2.0". Otherwise the release stops here, before it builds
+// anything, so a binary never reports one version while package.json says another.
 async function releaseVersion(): Promise<string> {
   if (process.env.GITHUB_REF_TYPE === "tag" && process.env.GITHUB_REF_NAME) {
-    return process.env.GITHUB_REF_NAME;
+    const tag = process.env.GITHUB_REF_NAME;
+    const expected = `v${pkg.version}`;
+    if (tag !== expected) {
+      console.error(
+        `release: the tag is ${tag}, but package.json has version ${pkg.version}, so the tag should be ${expected}.\n` +
+          `release: set "version" in package.json to "${tag.replace(/^v/, "")}", commit, and tag that commit again.`,
+      );
+      process.exit(1);
+    }
+    return tag;
   }
   const described = await $`git describe --tags --always --dirty`.nothrow().quiet();
   return described.exitCode === 0 ? described.text().trim() : "dev";
