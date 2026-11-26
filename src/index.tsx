@@ -5,6 +5,8 @@ import { cliAction, HELP, unknownCommandText } from "./cli.ts";
 import { loadConfig } from "./config.ts";
 import { IrcManager } from "./irc/manager.ts";
 import { Notifier } from "./notify.ts";
+import { applyTheme } from "./theme.ts";
+import { allThemes, loadUserThemes, selectTheme } from "./themes/index.ts";
 import { startUpdateCheck } from "./updateCheck.ts";
 import { runUpgrade } from "./upgrade.ts";
 import { versionLine } from "./version.ts";
@@ -50,6 +52,14 @@ if (!g.__ircHot) {
       manager.addServer(server);
     }
   }
+  // Before the first render. Problems go to *status, so they need a server.
+  const userThemes = loadUserThemes();
+  const selected = selectTheme(config.theme, allThemes(userThemes.entries));
+  applyTheme(selected.entry.theme);
+  const warnings = [...userThemes.warnings];
+  if (selected.warning) warnings.push(selected.warning);
+  for (const warning of warnings) manager.addAppNotice(warning);
+
   // In the background, at most once a day. See src/updateCheck.ts.
   startUpdateCheck((update, lines) => manager.showUpdate(update, lines));
 

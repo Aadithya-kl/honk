@@ -181,6 +181,27 @@ To turn notifications off, add this to the top level of the config file:
 { "notifications": false, "servers": [] }
 ```
 
+### Themes
+
+Choose a color theme at the top level of the config file, or with `--theme`:
+
+```json
+{ "theme": "catppuccin-mocha", "servers": [] }
+```
+
+The default is `tokyo-night`. honk also has more than 60 built-in themes from
+[Tinted Theming](https://github.com/tinted-theming/schemes), such as `nord`,
+`dracula` and `gruvbox-dark`.
+[src/themes/SOURCE.md](src/themes/SOURCE.md) lists all of them, with their
+authors. If you write a name honk does not know, it uses `tokyo-night` and lists
+the valid names in `*status`.
+
+To add a theme, put any Base16 or Base24 scheme file from that collection in
+`~/.config/honk/themes/`. The file name is the theme's name, so
+`~/.config/honk/themes/kanagawa.yaml` is `"theme": "kanagawa"`. honk skips a
+file whose text would be hard to read on its background, and says why in
+`*status`.
+
 ## Website
 
 The website is the plain HTML in `site/`. A push to `main` that changes
@@ -202,6 +223,12 @@ bun run typecheck
 bun run build       # binary for this machine in dist/honk
 bun run release     # binaries for every platform in dist/
 ```
+
+The built-in themes are listed in `src/themes/catalog.json`. To choose them by
+looking at each one in the demo, run `bun run review-themes` (y keeps a theme, n
+leaves it out). After you edit `catalog.json` by hand, run
+`bun run fetch-themes`. Both commands rewrite `src/themes/schemes/`,
+`bundled.ts` and `SOURCE.md`; commit those files.
 
 ## Testing on Linux
 

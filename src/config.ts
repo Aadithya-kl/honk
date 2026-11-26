@@ -59,9 +59,11 @@ function readConfigFile(path: string): AppConfig | null {
   const raw = readFileSync(path, "utf-8");
   const parsed = JSON.parse(raw) as Partial<AppConfig>;
   const notifications = parsed.notifications !== false;
-  if (!Array.isArray(parsed.servers)) return { servers: [], notifications };
+  const theme = typeof parsed.theme === "string" ? parsed.theme : undefined;
+  if (!Array.isArray(parsed.servers)) return { servers: [], notifications, theme };
   return {
     notifications,
+    theme,
     servers: parsed.servers.map((s, idx) => ({
       id: s.id || s.name || s.host || `server-${idx + 1}`,
       name: s.name || s.id || s.host,
@@ -102,6 +104,8 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
       break;
     }
   }
+
+  if (typeof flags.theme === "string") config = { ...config, theme: flags.theme };
 
   // 2. Allow quick CLI --server override/addition
   if (typeof flags.server === "string") {

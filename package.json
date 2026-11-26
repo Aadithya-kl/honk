@@ -18,6 +18,8 @@
     "test": "bun test",
     "build": "bun build src/index.tsx --compile --outfile dist/honk",
     "release": "bun scripts/release.ts",
+    "fetch-themes": "bun scripts/fetch-themes.ts",
+    "review-themes": "bun scripts/review-themes.tsx",
     "record-demo": "vhs scripts/demo.tape"
   },
   "dependencies": {

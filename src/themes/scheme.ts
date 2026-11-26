@@ -1,0 +1,228 @@
+// Base16 and Base24 color schemes (https://github.com/tinted-theming), and the
+// mapping from a scheme's 16 or 24 slots to honk's colors.
+//
+// Many scheme files do not follow the slot meanings of the spec exactly. So the
+// mapping trusts only what it can check:
+// - The text color (base05) must be readable on the background (base00), or
+//   the scheme is rejected.
+// - base10/base11 (Base24 "darker backgrounds") are used only when they are
+//   close to base00. Otherwise honk makes its own shades of base00. The same
+//   goes for the selection background, base02.
+// - The gray text slots (base03, base04) and the bright text (base06, base07)
+//   are used only when they are readable and really gray.
+// The accent slots (base08 red, ..., base0E magenta) are used as they are.
+// There is no hue check: Gruvbox's yellow-green "green" or Rose Pine's teal
+// cannot be told apart from a mistake.
+
+export interface Theme {
+  bgBase: string; // main chat canvas
+  bgSidebar: string; // left server/channel rail
+  bgNicklist: string; // right user list
+  bgHeader: string; // top topic bar
+  bgFooter: string; // bottom status bar
+  bgInput: string; // prompt input bar
+  bgActiveRow: string; // selected channel row
+  bgMention: string; // highlighted mention message row
+  bgOverlay: string; // floating omnibox surface
+  bgOverlaySel: string; // selected omnibox item
+  borderOverlay: string; // omnibox border
+  gutter: string; // hairlines and separators
+
+  fgPrimary: string; // main chat text
+  fgBright: string; // headings, active channel
+  fgSecondary: string; // inactive channel, nicklist
+  fgMuted: string; // timestamps, separators, hints
+  fgDim: string; // join/part/system noise
+
+  accent: string; // active indicator, channel names, prompt
+  accentAlt: string; // actions (/me), notices, DMs
+  green: string; // connected dot, +voice
+  yellow: string; // connecting dot, @op
+  red: string; // disconnected, errors, mention badge
+  cyan: string; // links, TLS badge, info
+  orange: string; // mode changes, highlights
+
+  nickPalette: readonly string[]; // colors for nick hashing
+}
+
+export interface Scheme {
+  system: "base16" | "base24";
+  name: string;
+  author: string;
+  variant: "dark" | "light";
+  palette: Record<string, string>;
+}
+
+const BASE16_SLOTS = Array.from(
+  { length: 16 },
+  (_, i) => `base0${i.toString(16).toUpperCase()}`,
+);
+const BASE24_SLOTS = Array.from({ length: 8 }, (_, i) => `base1${i}`);
+const HEX = /^#[0-9a-fA-F]{6}$/;
+
+/** WCAG level for normal text. A scheme whose base05 on base00 is below this is rejected. */
+export const MIN_TEXT_CONTRAST = 4.5;
+
+/**
+ * Checks a parsed scheme file. Returns the scheme, with all colors in lower
+ * case, or a list of problems.
+ */
+export function checkScheme(
+  value: unknown,
+): { ok: true; scheme: Scheme } | { ok: false; problems: string[] } {
+  const s = (value ?? {}) as Partial<Scheme>;
+  const problems: string[] = [];
+  if (s.system !== "base16" && s.system !== "base24") {
+    problems.push(`system must be "base16" or "base24", not ${JSON.stringify(s.system)}`);
+  }
+  if (typeof s.name !== "string" || s.name === "") problems.push("name is missing");
+  if (s.variant !== "dark" && s.variant !== "light") {
+    problems.push(`variant must be "dark" or "light", not ${JSON.stringify(s.variant)}`);
+  }
+  const slots = s.system === "base24" ? [...BASE16_SLOTS, ...BASE24_SLOTS] : BASE16_SLOTS;
+  const palette: Record<string, string> = {};
+  for (const slot of slots) {
+    const color = (s.palette as Record<string, unknown> | undefined)?.[slot];
+    if (typeof color === "string" && HEX.test(color)) {
+      palette[slot] = color.toLowerCase();
+    } else {
+      problems.push(`${slot} must be a color like "#1a1b26", not ${JSON.stringify(color)}`);
+    }
+  }
+  if (problems.length === 0) {
+    const ratio = contrast(palette.base05!, palette.base00!);
+    if (ratio < MIN_TEXT_CONTRAST) {
+      problems.push(
+        `text is hard to read: base05 on base00 has contrast ${ratio.toFixed(1)}:1, below ${MIN_TEXT_CONTRAST}:1`,
+      );
+    }
+  }
+  if (problems.length > 0) return { ok: false, problems };
+  return {
+    ok: true,
+    scheme: {
+      system: s.system!,
+      name: s.name!,
+      author: typeof s.author === "string" ? s.author : "",
+      variant: s.variant!,
+      palette,
+    },
+  };
+}
+
+export function schemeToTheme(scheme: Scheme): Theme {
+  const p = scheme.palette as Record<string, string> & { base00: string };
+  const bg = p.base00;
+  const fg = p.base05!;
+  // In light and dark themes alike, side panels are a little darker than the chat.
+  const shade = (amount: number) => mix(bg, "#000000", amount);
+
+  // Base24 darker backgrounds, when they are close to base00 (the base24
+  // github file has a near-black base10 in a white theme).
+  const nearBg = (color: string | undefined) =>
+    color !== undefined && contrast(color, bg) <= 1.6 ? color : undefined;
+  // The eye sees the same step in black as much bigger on a white background.
+  const light = scheme.variant === "light";
+  const darker = nearBg(p.base10) ?? shade(light ? 0.03 : 0.15);
+  const darkest = nearBg(p.base11) ?? shade(light ? 0.06 : 0.25);
+  // The selection background, softened when it is far from base00 (solarized
+  // puts a strong gray there).
+  const selection = nearBg(p.base02) ?? mix(bg, p.base02!, 0.4);
+
+  // Use a text slot only when it is readable and gray; otherwise fade the
+  // main text toward the background.
+  const grayText = (color: string | undefined, minContrast: number, fade: number) =>
+    color !== undefined && chroma(color) < 0.25 && contrast(color, bg) >= minContrast
+      ? color
+      : mix(fg, bg, fade);
+  const fgSecondary = grayText(p.base04, 3, 0.25);
+  const fgMuted = grayText(p.base03, 2, 0.5);
+
+  // The brightest gray among base05..base07 (in catppuccin-latte, base06 and
+  // base07 are accents; in rose-pine-dawn, base07 is a background).
+  const fgBright = [p.base06, p.base07].reduce<string>(
+    (best, c) =>
+      c !== undefined && chroma(c) < 0.25 && contrast(c, bg) > contrast(best, bg) ? c : best,
+    fg,
+  );
+
+  const accents = [
+    p.base08, p.base09, p.base0A, p.base0B, p.base0C, p.base0D, p.base0E,
+    p.base12, p.base13, p.base14, p.base15, p.base16, p.base17,
+  ];
+  const nickPalette = [
+    ...new Set(accents.filter((c): c is string => c !== undefined && contrast(c, bg) >= 3)),
+  ];
+
+  return {
+    bgBase: bg,
+    bgSidebar: darker,
+    bgNicklist: darker,
+    bgHeader: darker,
+    bgFooter: darkest,
+    bgInput: mix(bg, fg, 0.06),
+    bgActiveRow: selection,
+    bgMention: mix(bg, p.base08!, 0.15),
+    bgOverlay: mix(bg, fg, 0.05),
+    bgOverlaySel: selection,
+    borderOverlay: mix(bg, fgMuted, 0.6),
+    gutter: mix(bg, fgMuted, 0.6),
+
+    fgPrimary: fg,
+    fgBright,
+    fgSecondary,
+    fgMuted,
+    fgDim: mix(fgMuted, bg, 0.35),
+
+    accent: p.base0D!,
+    accentAlt: p.base0E!,
+    green: p.base0B!,
+    yellow: p.base0A!,
+    red: p.base08!,
+    cyan: p.base0C!,
+    orange: p.base09!,
+
+    // A theme with few readable accents still needs some nick colors.
+    nickPalette: nickPalette.length >= 4 ? nickPalette : [p.base08!, p.base0B!, p.base0D!, p.base0E!],
+  };
+}
+
+// --- color math -------------------------------------------------------------
+
+function channels(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** Mixes `a` toward `b`. amount 0 gives `a`, 1 gives `b`. */
+export function mix(a: string, b: string, amount: number): string {
+  const ca = channels(a);
+  const cb = channels(b);
+  return (
+    "#" +
+    ca
+      .map((v, i) => Math.round(v + (cb[i]! - v) * amount).toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+
+function luminance(hex: string): number {
+  const [r, g, b] = channels(hex).map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  }) as [number, number, number];
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** WCAG contrast ratio, from 1 (same color) to 21 (black on white). */
+export function contrast(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/** How colorful a color is: 0 for gray, 1 for a pure color such as #ff0000. */
+function chroma(hex: string): number {
+  const c = channels(hex);
+  return (Math.max(...c) - Math.min(...c)) / 255;
+}

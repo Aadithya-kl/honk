@@ -21,6 +21,8 @@ export interface AppConfig {
   servers: ServerConfig[];
   /** Desktop notifications for mentions and DMs. On unless set to false. See src/notify.ts. */
   notifications?: boolean;
+  /** Color theme id, such as "nord". See src/themes/index.ts. */
+  theme?: string;
 }
 
 export type ConnectionStatus =
