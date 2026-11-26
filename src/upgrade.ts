@@ -1,15 +1,26 @@
 // `honk upgrade`: replaces this binary with the latest GitHub release.
 //
-// It does the same checks as site/install.sh: the SHA-256 checksum from the
-// release's SHA256SUMS file, and the build provenance attestation when the
-// GitHub CLI (gh) is installed and logged in. It only replaces a binary that
+// It does the same steps as site/install.sh: it downloads the gzipped binary,
+// checks its SHA-256 checksum against the release's SHA256SUMS file, unpacks
+// it, and checks the build provenance attestation of the unpacked binary when
+// the GitHub CLI (gh) is installed and logged in. It only replaces a binary that
 // install.sh installed, as recorded in its receipt, so it never overwrites a
 // copy that Homebrew or another package manager owns.
 
 import { createHash } from "node:crypto";
-import { chmodSync, createReadStream, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  createReadStream,
+  createWriteStream,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import { TARGET, VERSION } from "./version.ts";
 
 export const REPO = "agustingianni/honk";
@@ -172,7 +183,9 @@ export async function upgrade(o: UpgradeOptions): Promise<void> {
     return;
   }
 
-  const asset = `honk-${o.target}`;
+  // A release ships each binary gzipped, and SHA256SUMS lists the .gz files.
+  const binary = `honk-${o.target}`;
+  const asset = `${binary}.gz`;
   const base = `${o.githubUrl}/${REPO}/releases/download/${encodeURIComponent(latest)}`;
 
   // The small file first, so a release without this asset fails before the big download.
@@ -180,36 +193,47 @@ export async function upgrade(o: UpgradeOptions): Promise<void> {
   const expected = checksumFor(sums, asset);
   if (!expected) throw new UpgradeError(`the ${latest} SHA256SUMS has no entry for ${asset}`);
 
-  // Download next to the binary, then rename over it. On one file system the
-  // rename is atomic, and a honk that is running keeps its old copy.
-  const tmp = join(dirname(self), `.honk.new-${process.pid}`);
+  // Download and unpack next to the binary, then rename over it. On one file
+  // system the rename is atomic, and a honk that is running keeps its old copy.
+  const dir = dirname(self);
+  const gz = join(dir, `.honk.new-${process.pid}.gz`);
+  const tmp = join(dir, `.honk.new-${process.pid}`);
   try {
     o.log(`downloading ${asset} ${latest}`);
     try {
-      await Bun.write(tmp, await fetchOk(`${base}/${asset}`));
+      await Bun.write(gz, await fetchOk(`${base}/${asset}`));
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
-        throw new UpgradeError(`cannot write to ${dirname(self)} (${code}). honk upgrade never uses sudo.`);
+        throw new UpgradeError(`cannot write to ${dir} (${code}). honk upgrade never uses sudo.`);
       }
       throw err;
     }
 
-    const actual = await sha256OfFile(tmp);
+    const actual = await sha256OfFile(gz);
     if (actual !== expected) {
       throw new UpgradeError(`checksum mismatch for ${asset} (expected ${expected}, got ${actual})`);
     }
     o.log("checksum OK");
 
+    // In a stream: the unpacked binary is over 100 MB.
+    try {
+      await pipeline(createReadStream(gz), createGunzip(), createWriteStream(tmp));
+    } catch (err) {
+      throw new UpgradeError(`could not unpack ${asset}: ${(err as Error).message}`);
+    }
+
+    // The release attests the unpacked binaries too, like install.sh checks them.
     const attestation = await o.verifyAttestation(tmp);
     if (attestation === "failed") {
-      throw new UpgradeError(`the attestation check failed for ${asset}. The download was deleted.`);
+      throw new UpgradeError(`the attestation check failed for ${binary}. The download was deleted.`);
     }
     if (attestation === "ok") o.log(`attestation OK (built by GitHub Actions from ${REPO})`);
 
     chmodSync(tmp, 0o755);
     renameSync(tmp, self);
   } finally {
+    rmSync(gz, { force: true });
     rmSync(tmp, { force: true });
   }
   o.log(`upgraded honk from ${o.version} to ${latest}`);

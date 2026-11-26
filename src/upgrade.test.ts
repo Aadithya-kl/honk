@@ -27,7 +27,7 @@ import {
 // A fake github.com with one release. Tests change `release` to shape it.
 const release = {
   tag: "v0.3.0" as string | undefined, // undefined: the repo has no releases
-  asset: "new honk binary",
+  asset: new Uint8Array(), // the bytes of honk-linux-x64.gz
   sums: "", // filled from `asset` unless a test sets it
 };
 const requests: string[] = [];
@@ -44,13 +44,13 @@ const server = Bun.serve({
     }
     const download = `/${REPO}/releases/download/${release.tag}/`;
     if (path === `${download}SHA256SUMS`) return new Response(release.sums);
-    if (path === `${download}honk-linux-x64`) return new Response(release.asset);
+    if (path === `${download}honk-linux-x64.gz`) return new Response(release.asset);
     return new Response("not found", { status: 404 });
   },
 });
 const githubUrl = server.url.origin;
 
-const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+const sha256 = (data: Uint8Array) => createHash("sha256").update(data).digest("hex");
 const root = mkdtempSync(join(tmpdir(), "honk-upgrade-test-"));
 let dir: string;
 let binary: string;
@@ -76,8 +76,8 @@ function writeReceipt(path: string) {
 
 beforeEach(() => {
   release.tag = "v0.3.0";
-  release.asset = "new honk binary";
-  release.sums = `${sha256(release.asset)}  honk-linux-x64\n${"0".repeat(64)}  honk-darwin-arm64\n`;
+  release.asset = Bun.gzipSync("new honk binary");
+  release.sums = `${sha256(release.asset)}  honk-linux-x64.gz\n${"0".repeat(64)}  honk-darwin-arm64.gz\n`;
   requests.length = 0;
   logs = [];
   // realpath, because macOS puts tmpdir behind the /var -> /private/var symlink.
@@ -154,23 +154,49 @@ describe("upgrade", () => {
   });
 
   test("keeps the old binary when the checksum does not match", async () => {
-    release.asset = "tampered honk binary";
-    await expect(upgrade(options())).rejects.toThrow(/checksum mismatch for honk-linux-x64/);
+    release.asset = Bun.gzipSync("tampered honk binary"); // SHA256SUMS still lists the real one
+    await expect(upgrade(options())).rejects.toThrow(/checksum mismatch for honk-linux-x64\.gz/);
     expect(binaryText()).toBe("old honk binary");
     expect(leftovers()).toEqual([]);
   });
 
+  test("keeps the old binary when the download is not valid gzip", async () => {
+    release.asset = new TextEncoder().encode("not gzip data");
+    release.sums = `${sha256(release.asset)}  honk-linux-x64.gz\n`;
+    await expect(upgrade(options())).rejects.toThrow(/could not unpack honk-linux-x64\.gz/);
+    expect(binaryText()).toBe("old honk binary");
+    expect(leftovers()).toEqual([]);
+  });
+
+  test("checks the attestation of the unpacked binary", async () => {
+    let checked = "";
+    const opts = options({
+      verifyAttestation: async (file) => {
+        checked = readFileSync(file, "utf-8");
+        return "ok";
+      },
+    });
+    await upgrade(opts);
+    expect(checked).toBe("new honk binary");
+  });
+
   test("keeps the old binary when the attestation check fails", async () => {
     const opts = options({ verifyAttestation: async () => "failed" });
-    await expect(upgrade(opts)).rejects.toThrow(/attestation check failed/);
+    await expect(upgrade(opts)).rejects.toThrow(/attestation check failed for honk-linux-x64\./);
     expect(binaryText()).toBe("old honk binary");
     expect(leftovers()).toEqual([]);
   });
 
   test("fails before the big download when SHA256SUMS has no entry for this target", async () => {
-    release.sums = `${"0".repeat(64)}  honk-darwin-arm64\n`;
-    await expect(upgrade(options())).rejects.toThrow(/no entry for honk-linux-x64/);
-    expect(requests.some((r) => r.endsWith("/honk-linux-x64"))).toBe(false);
+    release.sums = `${"0".repeat(64)}  honk-darwin-arm64.gz\n`;
+    await expect(upgrade(options())).rejects.toThrow(/no entry for honk-linux-x64\.gz/);
+    expect(requests.some((r) => r.endsWith("/honk-linux-x64.gz"))).toBe(false);
+  });
+
+  test("does not take an entry for the unpacked binary as the .gz checksum", async () => {
+    // A SHA256SUMS in the old format, with names without .gz.
+    release.sums = `${sha256(release.asset)}  honk-linux-x64\n`;
+    await expect(upgrade(options())).rejects.toThrow(/no entry for honk-linux-x64\.gz/);
   });
 
   test("reports a repo with no releases", async () => {
