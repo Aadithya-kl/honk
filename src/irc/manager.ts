@@ -1649,12 +1649,21 @@ export class IrcManager {
         if (activeBuffer === STATUS_BUFFER) {
           return reply("Use /history inside a channel or DM.", "error");
         }
-        const limit = Math.min(200, Math.max(1, Number(args[0]) || 50));
+        const wanted = Math.min(200, Math.max(1, Number(args[0]) || 50));
         const buf = server.buffers[activeBuffer];
-        if (buf && buf.messages.length >= MAX_MESSAGES_WITH_HISTORY) {
+        // Older lines past the cap would be fetched and then trimmed right away.
+        // When the request must shrink, the notice below takes one line of the room too.
+        const room = MAX_MESSAGES_WITH_HISTORY - (buf?.messages.length ?? 0);
+        const limit = wanted <= room ? wanted : room - 1;
+        if (limit <= 0) {
           return reply(
             `Scrollback is full (${MAX_MESSAGES_WITH_HISTORY} lines). Use /clear to start over.`,
             "error",
+          );
+        }
+        if (limit < wanted) {
+          reply(
+            `Fetching only ${limit} lines: scrollback holds at most ${MAX_MESSAGES_WITH_HISTORY}.`,
           );
         }
         const oldest = buf?.messages.find(
