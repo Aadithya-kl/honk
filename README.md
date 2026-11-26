@@ -43,10 +43,17 @@ quarantined, and Gatekeeper blocks it because the binary is not signed.
 PLATFORM=darwin-arm64
 
 mkdir -p ~/.local/bin
-curl -fL "https://github.com/agustingianni/honk/releases/latest/download/honk-$PLATFORM.gz" \
-  | gunzip > ~/.local/bin/honk
-chmod +x ~/.local/bin/honk
+curl -fL -o /tmp/honk.gz \
+  "https://github.com/agustingianni/honk/releases/latest/download/honk-$PLATFORM.gz" &&
+  gunzip -c /tmp/honk.gz > ~/.local/bin/honk.new &&
+  chmod +x ~/.local/bin/honk.new &&
+  mv ~/.local/bin/honk.new ~/.local/bin/honk
 ```
+
+Each step runs only if the one before it worked, so a failed download leaves
+an installed honk as it was. `honk upgrade` does not replace a copy installed
+by hand, because only the install script records where it put honk. To
+upgrade, repeat these steps.
 
 If you downloaded it in a browser anyway, remove the quarantine flag:
 
