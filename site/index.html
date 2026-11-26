@@ -265,6 +265,9 @@
     <li><strong>Scroll back further.</strong> Older messages load from the server, on networks that support chat history.</li>
     <li><strong>One conversation, every device.</strong> What you send from your phone or another client shows up here too.</li>
     <li><strong>Easy to follow.</strong> A color for each nick, mIRC colors, highlighted mentions, and a marker at your first unread line.</li>
+    <li><strong>Know when someone wants you.</strong> A desktop notification for mentions and DMs, even over SSH.</li>
+    <li><strong>Survive a dropped connection.</strong> honk reconnects as soon as the network is back, loads the DMs you missed, marks the mentions you missed, and shows which of your lines never reached the server.</li>
+    <li><strong>Your colors.</strong> More than 60 color themes. Press <kbd>Ctrl</kbd>+<kbd>K</kbd> and type <code>theme</code> to try each one on the whole screen.</li>
   </ul>
 
   <h2>Keys</h2>
@@ -281,11 +284,11 @@
   <p>honk is young. Things it does not do today:</p>
   <ul class="not-yet">
     <li>Windows.</li>
-    <li>Notifications. A mention gets a badge inside honk, but no desktop notification or terminal bell.</li>
     <li>Saved logs. Scrollback is gone when you quit. <span class="why">A bouncer, or a network with chat history, keeps it for you.</span></li>
     <li>An ignore list.</li>
     <li>Moderation commands such as <code>/kick</code>, <code>/ban</code> and <code>/mode</code>. <span class="why">Send them with <code>/raw</code> for now.</span></li>
-    <li>Proxies, DCC file transfers, scripts, plugins and color themes.</li>
+    <li>Connecting to IRC through a proxy. <span class="why"><code>honk upgrade</code> does use <code>HTTPS_PROXY</code>.</span></li>
+    <li>DCC file transfers, scripts and plugins.</li>
   </ul>
   <p class="note">
     Missing something you need?

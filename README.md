@@ -135,6 +135,26 @@ Flags: `--server host[:port]`, `--port`, `--nick`, `--channel` (can repeat),
 `--version` (or `-v`), `--help` (or `-h`).
 TLS is on by default. Type `/help` inside the client for the commands.
 
+### What honk does not do yet
+
+- Run on Windows.
+- Save logs. Scrollback is gone when you quit. A bouncer, or a network with
+  chat history, keeps it for you.
+- Ignore a user.
+- Moderation commands such as `/kick`, `/ban` and `/mode`. Send them with
+  `/raw` for now, such as `/raw KICK #channel nick`.
+- Connect to IRC through a proxy. Only `honk upgrade` and the update check use
+  `HTTPS_PROXY`.
+- DCC file transfers, scripts and plugins.
+
+honk also does not answer CTCP requests such as VERSION, TIME and PING, and
+this is on purpose. Many requests at once would make honk send many replies,
+and the server would disconnect it for flooding. TIME would also tell others
+your local time. `/me` and the connection keepalive still work.
+
+Missing something you need?
+[Open an issue](https://github.com/agustingianni/honk/issues).
+
 ## Configuration
 
 To connect to several servers at startup, create a config file. honk reads the
