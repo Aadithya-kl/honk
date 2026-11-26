@@ -2,11 +2,11 @@ import { createCliRenderer, type CliRenderer } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { App } from "./App.tsx";
 import { cliAction, HELP, unknownCommandText } from "./cli.ts";
-import { loadConfig } from "./config.ts";
+import { defaultConfigPath, loadConfig, saveThemeSetting } from "./config.ts";
 import { IrcManager } from "./irc/manager.ts";
 import { Notifier } from "./notify.ts";
 import { applyTheme } from "./theme.ts";
-import { allThemes, loadUserThemes, selectTheme } from "./themes/index.ts";
+import { allThemes, loadUserThemes, selectTheme, type ThemeEntry } from "./themes/index.ts";
 import { startUpdateCheck } from "./updateCheck.ts";
 import { runUpgrade } from "./upgrade.ts";
 import { versionLine } from "./version.ts";
@@ -35,6 +35,10 @@ interface HotState {
   root: Root;
   manager: IrcManager;
   version: number;
+  themes: ThemeEntry[];
+  /** The theme in use. Kept here so a hot reload, which resets src/theme.ts, keeps it. */
+  themeId: string;
+  saveTheme: (id: string) => void;
 }
 
 const g = globalThis as unknown as { __ircHot?: HotState };
@@ -54,8 +58,8 @@ if (!g.__ircHot) {
   }
   // Before the first render. Problems go to *status, so they need a server.
   const userThemes = loadUserThemes();
-  const selected = selectTheme(config.theme, allThemes(userThemes.entries));
-  applyTheme(selected.entry.theme);
+  const themes = allThemes(userThemes.entries);
+  const selected = selectTheme(config.theme, themes);
   const warnings = [...userThemes.warnings];
   if (selected.warning) warnings.push(selected.warning);
   for (const warning of warnings) manager.addAppNotice(warning);
@@ -91,11 +95,39 @@ if (!g.__ircHot) {
     void renderer.closed.finally(() => process.exit(0));
   });
 
-  g.__ircHot = { renderer, root, manager, version: 0 };
+  // The theme picker saves to the config file honk read, or creates the
+  // default one. With --theme, the flag still wins at the next start.
+  const saveTheme = (id: string) => {
+    hot.themeId = id;
+    const path = config.path ?? defaultConfigPath();
+    try {
+      saveThemeSetting(path, id);
+    } catch (err) {
+      manager.addAppNotice(`could not save the theme in ${path}: ${(err as Error).message}`);
+    }
+  };
+  const hot: HotState = {
+    renderer,
+    root,
+    manager,
+    version: 0,
+    themes,
+    themeId: selected.entry.id,
+    saveTheme,
+  };
+  g.__ircHot = hot;
 }
 
-g.__ircHot.version += 1;
-g.__ircHot.root.render(
-  <App key={g.__ircHot.version} manager={g.__ircHot.manager} />,
+const hot = g.__ircHot;
+hot.version += 1;
+applyTheme(hot.themes.find((t) => t.id === hot.themeId)!.theme);
+hot.root.render(
+  <App
+    key={hot.version}
+    manager={hot.manager}
+    themes={hot.themes}
+    initialThemeId={hot.themeId}
+    onThemeChosen={hot.saveTheme}
+  />,
 );
-g.__ircHot.renderer.requestRender();
+hot.renderer.requestRender();

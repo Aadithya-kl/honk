@@ -23,6 +23,7 @@ import { basename, join } from "node:path";
 import { App } from "../src/App.tsx";
 import { IrcManager } from "../src/irc/manager.ts";
 import { applyTheme, theme } from "../src/theme.ts";
+import type { ThemeEntry } from "../src/themes/index.ts";
 import { schemeToTheme } from "../src/themes/scheme.ts";
 import {
   type Candidate,
@@ -108,12 +109,26 @@ function Bar({ item, position }: { item: (typeof items)[number]; position: strin
 
 function show(): void {
   const item = items[index]!;
-  applyTheme(schemeToTheme(item.scheme));
+  const entry: ThemeEntry = {
+    id: item.name,
+    name: item.scheme.name,
+    author: item.scheme.author,
+    variant: item.scheme.variant,
+    source: "bundled",
+    theme: schemeToTheme(item.scheme),
+  };
+  applyTheme(entry.theme);
   root.render(
     <box flexDirection="column" width="100%" height="100%">
       <box flexGrow={1}>
         {/* A new key mounts a fresh App, so every color is read again. */}
-        <App key={item.path} manager={manager} />
+        <App
+          key={item.path}
+          manager={manager}
+          themes={[entry]}
+          initialThemeId={entry.id}
+          onThemeChosen={() => {}}
+        />
       </box>
       <Bar item={item} position={`${index + 1}/${items.length}`} />
     </box>,

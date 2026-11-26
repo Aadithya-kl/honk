@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { nickColor, prefixColor, theme } from "../theme.ts";
+import { nickColor, prefixColor, theme, useThemeVersion } from "../theme.ts";
 import type { BufferState } from "../types.ts";
 import { HEADER_HEIGHT, scrollboxStyle, truncate } from "./display.ts";
 
@@ -9,12 +9,13 @@ interface NicklistProps {
   onSelectUser: (nick: string) => void;
 }
 
-/** Memoized: only re-renders when this buffer's user list, the nick, or the handler changes. */
+/** Memoized: only re-renders when this buffer's user list, the nick, the handler or the theme changes. */
 export const Nicklist = memo(function Nicklist({
   users,
   myNick,
   onSelectUser,
 }: NicklistProps) {
+  useThemeVersion();
   const myLower = myNick.toLowerCase();
 
   return (

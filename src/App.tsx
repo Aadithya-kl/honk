@@ -6,7 +6,8 @@ import {
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { IrcManager } from "./irc/manager.ts";
 import { STATUS_BUFFER } from "./irc/names.ts";
-import { theme } from "./theme.ts";
+import { applyTheme, theme, ThemeVersion } from "./theme.ts";
+import type { ThemeEntry } from "./themes/index.ts";
 import { ChatPane } from "./ui/ChatPane.tsx";
 import { Nicklist } from "./ui/Nicklist.tsx";
 import { Omnibox } from "./ui/Omnibox.tsx";
@@ -19,9 +20,15 @@ const NICKLIST_MIN_WIDTH = 90;
 
 interface AppProps {
   manager: IrcManager;
+  /** Every theme the picker offers. */
+  themes: ThemeEntry[];
+  /** The theme in use when App mounts. index.tsx has applied it already. */
+  initialThemeId: string;
+  /** Called when the user keeps a theme in the picker, to save it. */
+  onThemeChosen: (id: string) => void;
 }
 
-export function App({ manager }: AppProps) {
+export function App({ manager, themes, initialThemeId, onThemeChosen }: AppProps) {
   const renderer = useRenderer();
   const { width } = useTerminalDimensions();
   const snapshot = useSyncExternalStore(manager.subscribe, manager.getSnapshot);
@@ -30,6 +37,28 @@ export function App({ manager }: AppProps) {
   const [nicklistOpen, setNicklistOpen] = useState(true);
   const [omniboxOpen, setOmniboxOpen] = useState(false);
   const [recentKeys, setRecentKeys] = useState<string[]>([]);
+  const [themeId, setThemeId] = useState(initialThemeId);
+  const [themeVersion, setThemeVersion] = useState(0);
+
+  // Copies the colors into the shared `theme` object, then re-renders. The
+  // version tells memoized components to render again too.
+  const previewTheme = useCallback(
+    (id: string) => {
+      const entry = themes.find((t) => t.id === id);
+      if (!entry) return;
+      applyTheme(entry.theme);
+      setThemeVersion((v) => v + 1);
+    },
+    [themes],
+  );
+  const chooseTheme = useCallback(
+    (id: string) => {
+      previewTheme(id);
+      setThemeId(id);
+      onThemeChosen(id);
+    },
+    [previewTheme, onThemeChosen],
+  );
 
   useEffect(() => {
     if (!snapshot.active) return;
@@ -119,64 +148,70 @@ export function App({ manager }: AppProps) {
     width - (showSidebar ? 24 : 0) - (showNicklist ? 20 : 0);
 
   return (
-    <box
-      flexDirection="column"
-      width="100%"
-      height="100%"
-      backgroundColor={theme.bgBase}
-    >
-      <box flexDirection="row" flexGrow={1} width="100%">
-        {showSidebar && (
-          <Sidebar
-            servers={snapshot.servers}
-            active={snapshot.active}
-            onSelect={selectBuffer}
-            onConnectServer={(serverId) =>
-              void manager.connectServer(serverId, { manual: true })
-            }
-          />
-        )}
+    <ThemeVersion.Provider value={themeVersion}>
+      <box
+        flexDirection="column"
+        width="100%"
+        height="100%"
+        backgroundColor={theme.bgBase}
+      >
+        <box flexDirection="row" flexGrow={1} width="100%">
+          {showSidebar && (
+            <Sidebar
+              servers={snapshot.servers}
+              active={snapshot.active}
+              onSelect={selectBuffer}
+              onConnectServer={(serverId) =>
+                void manager.connectServer(serverId, { manual: true })
+              }
+            />
+          )}
 
-        <ChatPane
+          <ChatPane
+            server={activeServer}
+            buffer={activeBuffer}
+            inputFocused={!omniboxOpen}
+            paneWidth={chatWidth}
+            onSubmit={submit}
+            onPasteLines={pasteLines}
+          />
+
+          {showNicklist && (
+            <Nicklist
+              users={activeBuffer!.users}
+              myNick={activeServer?.nick ?? ""}
+              onSelectUser={selectUser}
+            />
+          )}
+        </box>
+
+        <StatusBar
           server={activeServer}
-          buffer={activeBuffer}
-          inputFocused={!omniboxOpen}
-          paneWidth={chatWidth}
-          onSubmit={submit}
-          onPasteLines={pasteLines}
+          width={width}
+          sidebarFits={sidebarFits}
+          nicklistFits={nicklistFits && activeBuffer?.kind === "channel"}
+          update={snapshot.update}
         />
 
-        {showNicklist && (
-          <Nicklist
-            users={activeBuffer!.users}
-            myNick={activeServer?.nick ?? ""}
-            onSelectUser={selectUser}
+        {omniboxOpen && (
+          <Omnibox
+            servers={snapshot.servers}
+            active={snapshot.active}
+            recentKeys={recentKeys}
+            width={width}
+            onClose={closeOmnibox}
+            onSelectBuffer={selectBuffer}
+            onOpenDm={openDm}
+            onRunCommand={submit}
+            onToggleSidebar={toggleSidebar}
+            onToggleNicklist={toggleNicklist}
+            themes={themes}
+            themeId={themeId}
+            onPreviewTheme={previewTheme}
+            onChooseTheme={chooseTheme}
           />
         )}
       </box>
-
-      <StatusBar
-        server={activeServer}
-        width={width}
-        sidebarFits={sidebarFits}
-        nicklistFits={nicklistFits && activeBuffer?.kind === "channel"}
-        update={snapshot.update}
-      />
-
-      {omniboxOpen && (
-        <Omnibox
-          servers={snapshot.servers}
-          active={snapshot.active}
-          recentKeys={recentKeys}
-          width={width}
-          onClose={closeOmnibox}
-          onSelectBuffer={selectBuffer}
-          onOpenDm={openDm}
-          onRunCommand={submit}
-          onToggleSidebar={toggleSidebar}
-          onToggleNicklist={toggleNicklist}
-        />
-      )}
-    </box>
+    </ThemeVersion.Provider>
   );
 }

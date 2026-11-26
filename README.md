@@ -183,7 +183,15 @@ To turn notifications off, add this to the top level of the config file:
 
 ### Themes
 
-Choose a color theme at the top level of the config file, or with `--theme`:
+To choose a color theme, press Ctrl+K and type `theme`, or pick
+"Preferences: Color Theme..." from the `>` actions. Up and Down show each theme
+on the whole screen, Enter keeps it, and Esc goes back to the theme you had.
+honk saves the theme in the config file it read, or creates
+`~/.config/honk/config.json` if there was none. It changes only the `theme`
+line and leaves the rest of the file as it was.
+
+You can also set the theme yourself at the top level of the config file, or for
+one run with `--theme`:
 
 ```json
 { "theme": "catppuccin-mocha", "servers": [] }

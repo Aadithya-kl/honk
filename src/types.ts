@@ -23,6 +23,8 @@ export interface AppConfig {
   notifications?: boolean;
   /** Color theme id, such as "nord". See src/themes/index.ts. */
   theme?: string;
+  /** The file this config was read from, if any. Set by loadConfig, never read from the file. */
+  path?: string;
 }
 
 export type ConnectionStatus =

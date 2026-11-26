@@ -1,6 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { nickColor, theme } from "../theme.ts";
+import { nickColor, theme, useThemeVersion } from "../theme.ts";
+import type { ThemeEntry } from "../themes/index.ts";
 import { findSlashCommand, needsArgs, SLASH_COMMANDS } from "../irc/commands.ts";
 import { sameNick } from "../irc/names.ts";
 import type { ActiveBuffer, ServerState } from "../types.ts";
@@ -18,6 +19,8 @@ interface OmniboxItem {
   onSelect: () => void;
   /** Keep the omnibox open after selecting (items that change the query, like "?" help). */
   keepOpen?: boolean;
+  /** In the theme list: the theme this row previews when selected. */
+  themeId?: string;
 }
 
 interface OmniboxProps {
@@ -31,9 +34,20 @@ interface OmniboxProps {
   onRunCommand: (command: string) => void;
   onToggleSidebar: () => void;
   onToggleNicklist: () => void;
+  themes: ThemeEntry[];
+  /** The theme in use, which closing the theme list without a choice goes back to. */
+  themeId: string;
+  /** Shows a theme without saving it. */
+  onPreviewTheme: (id: string) => void;
+  /** Uses a theme and saves it in the config file. */
+  onChooseTheme: (id: string) => void;
 }
 
+/** "main": buffers and the prefix modes. "theme": the color theme list. */
+type OmniboxMode = "main" | "theme";
+
 const MAX_RESULTS = 10;
+const THEME_ACTION_LABEL = "Preferences: Color Theme...";
 /** How far back the active buffer is read to rank recent speakers first in "@" mode. */
 const RECENT_SPEAKER_SCAN = 300;
 
@@ -116,11 +130,25 @@ export function Omnibox({
   onRunCommand,
   onToggleSidebar,
   onToggleNicklist,
+  themes,
+  themeId,
+  onPreviewTheme,
+  onChooseTheme,
 }: OmniboxProps) {
+  const [mode, setMode] = useState<OmniboxMode>("main");
   const [query, setQuery] = useState("");
   // The selected item's id, not its row: the list is rebuilt when buffers or unread
   // counts change, and a row number would then point at another item or past the end.
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const themeVersion = useThemeVersion();
+  /** A theme was previewed, so closing must restore the theme in use. */
+  const previewedRef = useRef(false);
+  /** A theme was chosen with Enter or a click: keep it on close. */
+  const chosenRef = useRef(false);
+  const openThemeList = () => {
+    setMode("theme");
+    setQuery("");
+  };
 
   const activeServer = active
     ? servers.find((s) => s.id === active.serverId)
@@ -135,6 +163,44 @@ export function Omnibox({
     });
     // The action and slash command lists are short and fixed: show them whole.
     const all = (list: OmniboxItem[]) => ({ items: list, more: 0 });
+
+    // The color theme list. It is long, so the rows scroll (see `visible` below).
+    if (mode === "theme") {
+      const q = trimmed.trim();
+      return all(
+        themes
+          .map((entry, order) => ({
+            entry,
+            order,
+            score: fuzzyScore(q, `${entry.name} ${entry.id} ${entry.variant}`),
+          }))
+          .filter((x) => x.score >= 0)
+          .sort((a, b) => (q ? b.score - a.score : 0) || a.order - b.order)
+          .map(({ entry }): OmniboxItem => ({
+            id: `theme-${entry.id}`,
+            themeId: entry.id,
+            label: entry.name,
+            detail: [
+              entry.variant,
+              entry.source === "user" ? "yours" : undefined,
+              entry.id === themeId ? "current" : undefined,
+            ]
+              .filter(Boolean)
+              .join(", "),
+            onSelect: () => {
+              chosenRef.current = true;
+              onChooseTheme(entry.id);
+            },
+          })),
+      );
+    }
+    const themeAction = (id: string): OmniboxItem => ({
+      id,
+      label: THEME_ACTION_LABEL,
+      detail: themes.find((t) => t.id === themeId)?.name,
+      onSelect: openThemeList,
+      keepOpen: true,
+    });
 
     // ? -- mode help, as in VS Code
     if (trimmed === "?") {
@@ -261,6 +327,7 @@ export function Omnibox({
         onSelect: () => onRunCommand("/clear"),
       });
       add(
+        themeAction("cmd-theme"),
         { id: "cmd-sidebar", label: "View: Toggle Sidebar", hint: "^B", onSelect: onToggleSidebar },
         {
           id: "cmd-nicklist",
@@ -446,6 +513,11 @@ export function Omnibox({
     }
     const result = top(found);
 
+    // "theme" or "color" typed: offer the theme list, after the buffers.
+    if (!channelOnly && q.length >= 3 && "color theme".includes(q.toLowerCase())) {
+      result.items.push(themeAction("theme-open"));
+    }
+
     // If user typed #newchannel not yet joined, offer to join it
     if (channelOnly && q.length > 1 && !q.includes(" ") && activeServer) {
       const alreadyJoined = activeServer.bufferOrder.some((b) => sameNick(b, q));
@@ -462,6 +534,12 @@ export function Omnibox({
 
     return result;
   }, [
+    mode,
+    themes,
+    themeId,
+    onChooseTheme,
+    // Rows carry theme colors, so rebuild them while a theme is previewed.
+    themeVersion,
     query,
     servers,
     active,
@@ -479,16 +557,39 @@ export function Omnibox({
   }, [query]);
 
   const foundIndex = items.findIndex((item) => item.id === selectedId);
-  const selectedIndex = foundIndex === -1 ? 0 : foundIndex;
+  // The theme list opens on the theme in use.
+  const startIndex =
+    mode === "theme" && !query ? Math.max(0, items.findIndex((i) => i.themeId === themeId)) : 0;
+  const selectedIndex = foundIndex === -1 ? startIndex : foundIndex;
+
+  // Preview the selected theme. When the omnibox closes without a choice
+  // (Esc, Ctrl+K, a buffer chosen elsewhere), go back to the theme in use.
+  const previewThemeId = mode === "theme" ? items[selectedIndex]?.themeId : undefined;
+  useEffect(() => {
+    if (previewThemeId) onPreviewTheme(previewThemeId);
+  }, [previewThemeId, onPreviewTheme]);
+  const restoreRef = useRef(() => onPreviewTheme(themeId));
+  restoreRef.current = () => onPreviewTheme(themeId);
+  useEffect(
+    () => () => {
+      if (previewedRef.current && !chosenRef.current) restoreRef.current();
+    },
+    [],
+  );
+  if (previewThemeId) previewedRef.current = true;
   // Several keys can arrive before React re-renders, so each move starts from the
   // previous move's result (the updater's `prev`), not from this render's selection.
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  // Where the highlight is when nothing was selected yet (the current theme in the theme list).
+  const startIndexRef = useRef(startIndex);
+  startIndexRef.current = startIndex;
   const moveSelection = (delta: 1 | -1) => {
     setSelectedId((prev) => {
       const list = itemsRef.current;
       if (list.length === 0) return prev;
-      const at = Math.max(0, list.findIndex((item) => item.id === prev));
+      const found = list.findIndex((item) => item.id === prev);
+      const at = found === -1 ? startIndexRef.current : found;
       return list[(at + delta + list.length) % list.length]?.id ?? null;
     });
   };
@@ -519,6 +620,17 @@ export function Omnibox({
   };
   const executeSelected = () => select(items[selectedIndex]);
 
+  // The theme list can be long: show a window of rows that keeps the selection
+  // in view.
+  const windowStart =
+    mode === "theme"
+      ? Math.min(
+          Math.max(0, selectedIndex - Math.floor(MAX_RESULTS / 2)),
+          Math.max(0, items.length - MAX_RESULTS),
+        )
+      : 0;
+  const visible = mode === "theme" ? items.slice(windowStart, windowStart + MAX_RESULTS) : items;
+
   return (
     <box
       position="absolute"
@@ -547,9 +659,16 @@ export function Omnibox({
           flexGrow={1}
           focused
           value={query}
-          placeholder="Jump to buffer… (> actions, / commands, @ users, ? help)"
+          placeholder={
+            mode === "theme"
+              ? "Color theme (Up/Down to preview, Enter to keep, Esc to cancel)"
+              : "Jump to buffer… (> actions, / commands, @ users, ? help)"
+          }
           backgroundColor={theme.bgInput}
           textColor={theme.fgBright}
+          // Set these too: the input copies them once, when it is created.
+          focusedBackgroundColor={theme.bgInput}
+          focusedTextColor={theme.fgBright}
           placeholderColor={theme.fgMuted}
           onInput={setQuery}
           onSubmit={executeSelected}
@@ -563,8 +682,8 @@ export function Omnibox({
             <text fg={theme.fgMuted}>No matching results</text>
           </box>
         ) : (
-          items.map((item, idx) => {
-            const isSel = idx === selectedIndex;
+          visible.map((item, row) => {
+            const isSel = windowStart + row === selectedIndex;
             const { label, detail } = fitRow(item, rowWidth);
             return (
               <box
@@ -605,6 +724,11 @@ export function Omnibox({
         {more > 0 ? (
           <box height={1} paddingLeft={2}>
             <text fg={theme.fgMuted}>{`${more} more, type to narrow the list`}</text>
+          </box>
+        ) : null}
+        {mode === "theme" && items.length > MAX_RESULTS ? (
+          <box height={1} paddingLeft={2}>
+            <text fg={theme.fgMuted}>{`${selectedIndex + 1} of ${items.length}`}</text>
           </box>
         ) : null}
       </box>

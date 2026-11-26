@@ -2,7 +2,7 @@ import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, usePaste } from "@opentui/react";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { sameNick, STATUS_BUFFER } from "../irc/names.ts";
-import { nickColor, theme } from "../theme.ts";
+import { nickColor, theme, useThemeVersion } from "../theme.ts";
 import type { BufferState, ChatMessage, ServerState } from "../types.ts";
 import { getCompletions } from "./completion.ts";
 import { HEADER_HEIGHT, scrollboxStyle, truncate } from "./display.ts";
@@ -79,6 +79,7 @@ const MessageRow = memo(function MessageRow({
   /** False in a DM: every line there is to you, so painting each one adds nothing. */
   highlightMentions: boolean;
 }) {
+  useThemeVersion(); // re-render when the theme changes
   const mention = highlightMentions && Boolean(msg.isMention);
   const sender = msg.from ?? "";
   const senderColor = msg.isSelf ? theme.accent : nickColor(sender);
@@ -490,6 +491,9 @@ export function ChatPane({
           placeholder="Message or /help..."
           backgroundColor={theme.bgInput}
           textColor={theme.fgBright}
+          // Set these too: the input copies them once, when it is created.
+          focusedBackgroundColor={theme.bgInput}
+          focusedTextColor={theme.fgBright}
           placeholderColor={theme.fgMuted}
           onInput={handleInput}
           onSubmit={handleSubmit}

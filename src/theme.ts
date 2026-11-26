@@ -1,3 +1,4 @@
+import { createContext, useContext } from "react";
 import { builtinThemes, DEFAULT_THEME_ID, type Theme } from "./themes/index.ts";
 
 // The colors in use. Components read this object directly. applyTheme copies
@@ -9,6 +10,17 @@ export const theme: Theme = {
 
 export function applyTheme(next: Theme): void {
   Object.assign(theme, next);
+}
+
+/**
+ * Goes up by one each time App applies a theme. A component that skips
+ * re-renders (memo) or caches colors (useMemo) reads it, so it renders again
+ * with the new colors. Other components re-render with App anyway.
+ */
+export const ThemeVersion = createContext(0);
+
+export function useThemeVersion(): number {
+  return useContext(ThemeVersion);
 }
 
 export function nickColor(nick: string): string {

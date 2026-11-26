@@ -1,6 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { AppConfig, AuthMethod, ServerConfig } from "./types.ts";
 
 export function defaultNick(): string {
@@ -92,7 +99,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
     candidates.push(resolve(flags.config));
   } else {
     candidates.push(resolve("honk.json"));
-    candidates.push(join(homedir(), ".config", "honk", "config.json"));
+    candidates.push(defaultConfigPath());
   }
 
   let config: AppConfig = { servers: [] };
@@ -100,7 +107,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
   for (const candidate of candidates) {
     const loaded = readConfigFile(candidate);
     if (loaded) {
-      config = loaded;
+      config = { ...loaded, path: candidate };
       break;
     }
   }
@@ -168,4 +175,65 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
   }
 
   return config;
+}
+
+export function defaultConfigPath(): string {
+  return join(homedir(), ".config", "honk", "config.json");
+}
+
+/**
+ * Returns the config file text with "theme" set to `id`. It edits the text
+ * instead of writing the parsed object back, so the user's spacing and key
+ * order stay as they were. Throws if the text is not a JSON object, so a
+ * broken file is never overwritten.
+ */
+export function setThemeInConfigText(text: string, id: string): string {
+  const value = JSON.stringify(id);
+  const withTheme = (next: string | undefined) => {
+    if (next === undefined) return undefined;
+    try {
+      return (JSON.parse(next) as { theme?: unknown }).theme === id ? next : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Replace the value of an existing "theme" key. If that key was a nested
+  // one, the result has no top-level theme and the next step adds one.
+  const existing = /("theme"\s*:\s*)"(?:[^"\\]|\\.)*"/;
+  const replaced = existing.test(text)
+    ? text.replace(existing, (_, key: string) => `${key}${value}`)
+    : undefined;
+
+  // Add "theme" as the first key, indented like the line after "{".
+  const open = text.indexOf("{");
+  let added: string | undefined;
+  if (open !== -1) {
+    const rest = text.slice(open + 1);
+    const indent = /^[^\S\n]*\n([^\S\n]*)\S/.exec(rest)?.[1] ?? "  ";
+    added = rest.trimStart().startsWith("}")
+      ? `${text.slice(0, open)}{ "theme": ${value} }${rest.replace(/^\s*\}/, "")}`
+      : `${text.slice(0, open + 1)}\n${indent}"theme": ${value},${rest}`;
+  }
+
+  const result = withTheme(replaced) ?? withTheme(added);
+  if (result === undefined) throw new Error("the config file is not a JSON object");
+  return result;
+}
+
+/**
+ * Saves the theme in the config file at `path`, or creates the file with only
+ * the theme. Writes a temporary file first, so a crash never leaves half a file.
+ */
+export function saveThemeSetting(configPath: string, id: string): void {
+  // Write through a symlink (a config kept in a dotfiles repo) instead of
+  // replacing the link with a plain file.
+  const path = existsSync(configPath) ? realpathSync(configPath) : configPath;
+  const text = existsSync(path)
+    ? setThemeInConfigText(readFileSync(path, "utf-8"), id)
+    : `${JSON.stringify({ theme: id }, null, 2)}\n`;
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, path);
 }

@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from "react";
-import { theme } from "../theme.ts";
+import { theme, useThemeVersion } from "../theme.ts";
 
 // Standard mIRC 0-15 colors (tuned slightly for dark TrueColor backgrounds)
 const IRC_COLORS_16: readonly string[] = [
@@ -237,7 +237,9 @@ export function FormattedText({
   defaultFg = theme.fgPrimary,
   forceItalic = false,
 }: FormattedTextProps) {
-  const segments = useMemo(() => parseIrcText(text), [text]);
+  // Links get theme.cyan while parsing, so parse again when the theme changes.
+  const themeVersion = useThemeVersion();
+  const segments = useMemo(() => parseIrcText(text), [text, themeVersion]);
   return <Segments segments={segments} defaultFg={defaultFg} forceItalic={forceItalic} />;
 }
 
@@ -247,7 +249,8 @@ export function FormattedText({
  * notices and the MOTD, which were always shown as plain text.
  */
 export function LinkedText({ text, fg }: { text: string; fg: string }) {
-  const segments = useMemo(() => splitSegmentUrls({ text }), [text]);
+  const themeVersion = useThemeVersion();
+  const segments = useMemo(() => splitSegmentUrls({ text }), [text, themeVersion]);
   return <Segments segments={segments} defaultFg={fg} forceItalic={false} />;
 }
 
