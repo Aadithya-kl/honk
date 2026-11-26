@@ -70,7 +70,8 @@ honk --demo
 ```
 
 Flags: `--server host[:port]`, `--port`, `--nick`, `--channel` (can repeat),
-`--password` (uses SASL), `--sasl`, `--no-tls`, `--config path`, `--demo`.
+`--password` (uses SASL), `--sasl`, `--no-tls`, `--config path`, `--demo`,
+`--version` (or `-v`).
 TLS is on by default. Type `/help` inside the client for the commands.
 
 ## Configuration
