@@ -1,0 +1,23 @@
+{
+  "servers": [
+    {
+      "id": "libera",
+      "name": "libera.chat",
+      "host": "irc.libera.chat",
+      "port": 6697,
+      "tls": true,
+      "nick": "goose_irc",
+      "channels": ["#libera"]
+    },
+    {
+      "id": "oftc",
+      "name": "oftc",
+      "host": "irc.oftc.net",
+      "port": 6697,
+      "tls": true,
+      "nick": "goose_irc",
+      "channels": ["#oftc"],
+      "autoConnect": false
+    }
+  ]
+}

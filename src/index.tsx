@@ -1,0 +1,40 @@
+import { createCliRenderer, type CliRenderer } from "@opentui/core";
+import { createRoot, type Root } from "@opentui/react";
+import { App } from "./App.tsx";
+import { loadConfig } from "./config.ts";
+import { IrcManager } from "./irc/manager.ts";
+
+interface HotState {
+  renderer: CliRenderer;
+  root: Root;
+  manager: IrcManager;
+  version: number;
+}
+
+const g = globalThis as unknown as { __ircHot?: HotState };
+
+if (!g.__ircHot) {
+  const config = loadConfig();
+  const manager = new IrcManager();
+
+  if (config.servers.length === 0) {
+    manager.initWelcome();
+  } else {
+    for (const server of config.servers) {
+      manager.addServer(server);
+    }
+  }
+
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: false,
+  });
+  const root = createRoot(renderer);
+
+  g.__ircHot = { renderer, root, manager, version: 0 };
+}
+
+g.__ircHot.version += 1;
+g.__ircHot.root.render(
+  <App key={g.__ircHot.version} manager={g.__ircHot.manager} />,
+);
+g.__ircHot.renderer.requestRender();

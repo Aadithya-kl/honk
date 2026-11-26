@@ -1,0 +1,266 @@
+import { useMemo, type ReactNode } from "react";
+import { theme } from "../theme.ts";
+
+// Standard mIRC 0-15 colors (tuned slightly for dark TrueColor backgrounds)
+const IRC_COLORS_16: readonly string[] = [
+  "#e2e8ff", // 0  white
+  "#565f89", // 1  black (readable slate on dark bg)
+  "#3d59a1", // 2  navy
+  "#41a6b5", // 3  green
+  "#f7768e", // 4  red
+  "#a9445a", // 5  brown/maroon
+  "#9d7cd8", // 6  purple
+  "#ff9e64", // 7  orange
+  "#e0af68", // 8  yellow
+  "#9ece6a", // 9  light green
+  "#2ac3de", // 10 teal
+  "#7dcfff", // 11 light cyan
+  "#7aa2f7", // 12 light blue
+  "#bb9af7", // 13 pink/magenta
+  "#737aa2", // 14 grey
+  "#a9b1d6", // 15 light grey
+];
+
+// Extended mIRC colors 16-98 (official IRC modern spec)
+const IRC_COLORS_EXT: readonly string[] = [
+  "#470000", "#472100", "#474700", "#324700", "#004700", "#00472c", "#004747", "#002747", "#000047", "#2e0047", "#470047", "#47002a",
+  "#740000", "#743a00", "#747400", "#517400", "#007400", "#007449", "#007474", "#004074", "#000074", "#4b0074", "#740074", "#740045",
+  "#b50000", "#b56300", "#b5b500", "#7db500", "#00b500", "#00b571", "#00b5b5", "#0063b5", "#0000b5", "#7500b5", "#b500b5", "#b5006b",
+  "#ff0000", "#ff8c00", "#ffff00", "#b2ff00", "#00ff00", "#00ffa0", "#00ffff", "#008cff", "#0000ff", "#a500ff", "#ff00ff", "#ff0098",
+  "#ff5959", "#ffb459", "#ffff71", "#cfff60", "#6fff6f", "#65ffc9", "#6dffff", "#59b4ff", "#5959ff", "#c459ff", "#ff66ff", "#ff59bc",
+  "#ff9c9c", "#ffd39c", "#ffff9c", "#e2ff9c", "#9cff9c", "#9cffdb", "#9cffff", "#9cd3ff", "#9c9cff", "#dc9cff", "#ff9cff", "#ff94d3",
+  "#000000", "#131313", "#282828", "#363636", "#4d4d4d", "#656565", "#818181", "#9f9f9f", "#bcbcbc", "#e2e2e2", "#ffffff",
+];
+
+function ircColorToHex(code: number): string | undefined {
+  if (code === 99) return undefined;
+  if (code >= 0 && code < 16) return IRC_COLORS_16[code];
+  if (code >= 16 && code < 16 + IRC_COLORS_EXT.length) {
+    return IRC_COLORS_EXT[code - 16];
+  }
+  return undefined;
+}
+
+interface FormattedSegment {
+  text: string;
+  fg?: string;
+  bg?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  href?: string;
+}
+
+const URL_RE = /https?:\/\/[^\s<>"'`]+/g;
+
+function trimUrlTrailingPunct(url: string): { url: string; trailing: string } {
+  let end = url.length;
+  while (end > 0) {
+    const ch = url[end - 1]!;
+    if (/[.,;:!?]/.test(ch)) {
+      end--;
+      continue;
+    }
+    if (ch === ")") {
+      const opens = (url.slice(0, end).match(/\(/g) ?? []).length;
+      const closes = (url.slice(0, end).match(/\)/g) ?? []).length;
+      if (closes > opens) {
+        end--;
+        continue;
+      }
+    }
+    if (ch === "]") {
+      const opens = (url.slice(0, end).match(/\[/g) ?? []).length;
+      const closes = (url.slice(0, end).match(/\]/g) ?? []).length;
+      if (closes > opens) {
+        end--;
+        continue;
+      }
+    }
+    break;
+  }
+  return { url: url.slice(0, end), trailing: url.slice(end) };
+}
+
+function splitSegmentUrls(seg: FormattedSegment): FormattedSegment[] {
+  URL_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let lastIdx = 0;
+  const out: FormattedSegment[] = [];
+
+  while ((match = URL_RE.exec(seg.text)) !== null) {
+    if (match.index > lastIdx) {
+      out.push({ ...seg, text: seg.text.slice(lastIdx, match.index) });
+    }
+    const { url, trailing } = trimUrlTrailingPunct(match[0]);
+    if (url) {
+      out.push({
+        ...seg,
+        text: url,
+        href: url,
+        underline: true,
+        fg: seg.fg ?? theme.cyan,
+      });
+    }
+    if (trailing) {
+      out.push({ ...seg, text: trailing });
+    }
+    lastIdx = match.index + match[0].length;
+  }
+
+  if (out.length === 0) return [seg];
+  if (lastIdx < seg.text.length) {
+    out.push({ ...seg, text: seg.text.slice(lastIdx) });
+  }
+  return out;
+}
+
+/**
+ * Parses mIRC formatting codes (\x02 bold, \x1D italic, \x1F underline,
+ * \x16 reverse, \x03 color, \x04 hex color, \x0F reset) and splits out URLs.
+ */
+function parseIrcText(input: string): FormattedSegment[] {
+  const rawSegments: FormattedSegment[] = [];
+  let bold = false;
+  let italic = false;
+  let underline = false;
+  let reverse = false;
+  let fg: string | undefined;
+  let bg: string | undefined;
+  let buf = "";
+
+  const flush = () => {
+    if (!buf) return;
+    const effFg = reverse ? (bg ?? theme.bgBase) : fg;
+    const effBg = reverse ? (fg ?? theme.fgPrimary) : bg;
+    rawSegments.push({
+      text: buf,
+      ...(effFg ? { fg: effFg } : {}),
+      ...(effBg ? { bg: effBg } : {}),
+      ...(bold ? { bold: true } : {}),
+      ...(italic ? { italic: true } : {}),
+      ...(underline ? { underline: true } : {}),
+    });
+    buf = "";
+  };
+
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i);
+
+    switch (code) {
+      case 0x02: // Bold
+        flush();
+        bold = !bold;
+        break;
+      case 0x1d: // Italic
+        flush();
+        italic = !italic;
+        break;
+      case 0x1f: // Underline
+        flush();
+        underline = !underline;
+        break;
+      case 0x16: // Reverse
+        flush();
+        reverse = !reverse;
+        break;
+      case 0x0f: // Reset all
+        flush();
+        bold = false;
+        italic = false;
+        underline = false;
+        reverse = false;
+        fg = undefined;
+        bg = undefined;
+        break;
+      case 0x1e: // Strikethrough (no native tag, strip cleanly)
+      case 0x11: // Monospace (already monospace terminal, strip cleanly)
+        break;
+      case 0x03: {
+        // mIRC color: \x03[fg[,bg]]
+        flush();
+        const rest = input.slice(i + 1);
+        const m = /^(\d{1,2})(?:,(\d{1,2}))?/.exec(rest);
+        if (!m) {
+          fg = undefined;
+          bg = undefined;
+        } else {
+          fg = ircColorToHex(Number(m[1]));
+          if (m[2] !== undefined) {
+            bg = ircColorToHex(Number(m[2]));
+          }
+          i += m[0].length;
+        }
+        break;
+      }
+      case 0x04: {
+        // Hex color: \x04[RRGGBB[,RRGGBB]]
+        flush();
+        const rest = input.slice(i + 1);
+        const m = /^([0-9a-fA-F]{6})(?:,([0-9a-fA-F]{6}))?/.exec(rest);
+        if (!m) {
+          fg = undefined;
+          bg = undefined;
+        } else {
+          fg = `#${m[1]}`;
+          if (m[2] !== undefined) {
+            bg = `#${m[2]}`;
+          }
+          i += m[0].length;
+        }
+        break;
+      }
+      default:
+        // Strip other low ASCII control characters (except tab)
+        if (code < 0x20 && code !== 0x09) break;
+        buf += input[i]!;
+        break;
+    }
+  }
+  flush();
+
+  const finalSegments: FormattedSegment[] = [];
+  for (const seg of rawSegments) {
+    finalSegments.push(...splitSegmentUrls(seg));
+  }
+  return finalSegments;
+}
+
+interface FormattedTextProps {
+  text: string;
+  defaultFg?: string;
+  forceItalic?: boolean;
+}
+
+export function FormattedText({
+  text,
+  defaultFg = theme.fgPrimary,
+  forceItalic = false,
+}: FormattedTextProps) {
+  const segments = useMemo(() => parseIrcText(text), [text]);
+
+  return (
+    <>
+      {segments.map((seg, idx) => {
+        let node: ReactNode = seg.text;
+        if (seg.underline) node = <u>{node}</u>;
+        if (seg.italic || forceItalic) node = <em>{node}</em>;
+        if (seg.bold) node = <strong>{node}</strong>;
+
+        if (seg.href) {
+          return (
+            <a key={idx} href={seg.href} fg={seg.fg ?? theme.cyan} bg={seg.bg}>
+              {node}
+            </a>
+          );
+        }
+
+        return (
+          <span key={idx} fg={seg.fg ?? defaultFg} bg={seg.bg}>
+            {node}
+          </span>
+        );
+      })}
+    </>
+  );
+}
