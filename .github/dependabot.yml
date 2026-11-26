@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # TypeScript major versions need config and code changes; upgrade by hand.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       opentui:
         patterns: ["@opentui/*"]
