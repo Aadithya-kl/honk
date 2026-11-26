@@ -587,6 +587,7 @@ export class IrcManager {
         STATUS_BUFFER,
         makeMessage("system", "Disconnected."),
       );
+      if (client) this.noteOffline(serverId, "Disconnected. Use /connect to reconnect.");
     }
   }
 
@@ -689,6 +690,7 @@ export class IrcManager {
         ctrl.connectTimer = null;
       }
       ctrl.registered = true;
+      const isReconnect = ctrl.hasEverConnected;
       ctrl.hasEverConnected = true;
       ctrl.nickCollisionTries = 0;
 
@@ -709,6 +711,14 @@ export class IrcManager {
         STATUS_BUFFER,
         makeMessage("system", `Registered as ${server.nick}.`),
       );
+      // Channels show "You joined" when the server re-joins them; DMs get a line here.
+      if (isReconnect) {
+        for (const name of server.bufferOrder) {
+          if (server.buffers[name]?.kind === "dm") {
+            this.pushMessage(serverId, name, makeMessage("system", "Reconnected."));
+          }
+        }
+      }
     });
 
     client.on("isupport:network", (msg) => {
@@ -746,6 +756,7 @@ export class IrcManager {
         STATUS_BUFFER,
         makeMessage("system", "Connection lost."),
       );
+      this.noteOffline(serverId, "Connection lost. Reconnecting…");
       this.scheduleReconnect(serverId);
     });
 
@@ -1073,6 +1084,23 @@ export class IrcManager {
         ),
       );
     });
+  }
+
+  /**
+   * Tells every open channel and DM that the connection is gone, and empties the user
+   * lists, which are stale until the server re-joins (and sends NAMES again).
+   */
+  private noteOffline(serverId: string, text: string): void {
+    const server = this.servers.get(serverId);
+    if (!server) return;
+    for (const name of server.bufferOrder) {
+      const buf = server.buffers[name];
+      if (!buf || buf.kind === "status") continue;
+      if (buf.users.length > 0) {
+        server.buffers = { ...server.buffers, [name]: { ...buf, users: [] } };
+      }
+      this.pushMessage(serverId, name, makeMessage("system", text));
+    }
   }
 
   /** Where replies to a command (errors, WHOIS) go: the active buffer if it is on this server. */
