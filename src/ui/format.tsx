@@ -238,7 +238,28 @@ export function FormattedText({
   forceItalic = false,
 }: FormattedTextProps) {
   const segments = useMemo(() => parseIrcText(text), [text]);
+  return <Segments segments={segments} defaultFg={defaultFg} forceItalic={forceItalic} />;
+}
 
+/**
+ * Plain text in one color, with its URLs as links. Unlike FormattedText, it
+ * does not read mIRC formatting codes. For system lines, such as honk's own
+ * notices and the MOTD, which were always shown as plain text.
+ */
+export function LinkedText({ text, fg }: { text: string; fg: string }) {
+  const segments = useMemo(() => splitSegmentUrls({ text }), [text]);
+  return <Segments segments={segments} defaultFg={fg} forceItalic={false} />;
+}
+
+function Segments({
+  segments,
+  defaultFg,
+  forceItalic,
+}: {
+  segments: FormattedSegment[];
+  defaultFg: string;
+  forceItalic: boolean;
+}) {
   return (
     <>
       {segments.map((seg, idx) => {

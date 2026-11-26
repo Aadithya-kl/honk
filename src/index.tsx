@@ -40,7 +40,7 @@ if (!g.__ircHot) {
     }
   }
   // In the background, at most once a day. See src/updateCheck.ts.
-  startUpdateCheck((update, text) => manager.showUpdate(update, text));
+  startUpdateCheck((update, lines) => manager.showUpdate(update, lines));
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,

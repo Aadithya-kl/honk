@@ -6,7 +6,7 @@ import {
   CHECK_INTERVAL_MS,
   checkForUpdate,
   defaultCachePath,
-  noticeText,
+  noticeLines,
   readCache,
   updateCheckDisabled,
   type UpdateCheckOptions,
@@ -46,9 +46,10 @@ function options(overrides: Partial<UpdateCheckOptions> = {}): UpdateCheckOption
     now: () => NOW,
     timeoutMs: 2000,
     upgradeable: () => true,
-    notify: (update, text) => {
+    // Records the first line, the sentence. The link line is tested below.
+    notify: (update, lines) => {
       updates.push(update);
-      notices.push(text);
+      notices.push(lines[0]!);
     },
     ...overrides,
   };
@@ -187,7 +188,10 @@ describe("paths and text", () => {
     expect(defaultCachePath({ XDG_CACHE_HOME: "/c" })).toBe("/c/honk/update-check.json");
     expect(defaultCachePath({ XDG_CACHE_HOME: "" })).toMatch(/\.cache\/honk\/update-check\.json$/);
   });
-  test("noticeText", () => {
-    expect(noticeText("v0.2.0", "v0.3.0", true)).toBe(NOTICE);
+  test("noticeLines: the sentence, then the release notes link on its own line", () => {
+    expect(noticeLines("v0.2.0", "v0.3.0", true)).toEqual([
+      NOTICE,
+      "What's new in v0.3.0: https://github.com/agustingianni/honk/releases/tag/v0.3.0",
+    ]);
   });
 });

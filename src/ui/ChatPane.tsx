@@ -6,7 +6,7 @@ import { nickColor, theme } from "../theme.ts";
 import type { BufferState, ChatMessage, ServerState } from "../types.ts";
 import { getCompletions } from "./completion.ts";
 import { HEADER_HEIGHT, scrollboxStyle, truncate } from "./display.ts";
-import { FormattedText } from "./format.tsx";
+import { FormattedText, LinkedText } from "./format.tsx";
 
 interface ChatPaneProps {
   server: ServerState | undefined;
@@ -126,8 +126,13 @@ const MessageRow = memo(function MessageRow({
       // join, part, system
       label = padNick(msg.kind === "join" ? "→" : msg.kind === "part" ? "←" : "·");
       labelFg = theme.fgDim;
-      const textColor = msg.kind === "system" ? theme.fgSecondary : theme.fgMuted;
-      body = <span fg={textColor}>{msg.text}</span>;
+      body =
+        msg.kind === "system" ? (
+          // honk's own lines (the update notice) and the MOTD can hold links.
+          <LinkedText text={msg.text} fg={theme.fgSecondary} />
+        ) : (
+          <span fg={theme.fgMuted}>{msg.text}</span>
+        );
     }
   }
 

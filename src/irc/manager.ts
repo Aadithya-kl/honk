@@ -439,11 +439,11 @@ export class IrcManager {
 
   /**
    * Shows that a newer release exists: a short label in the status bar, which
-   * stays visible in every buffer, and the full sentence in *status.
+   * stays visible in every buffer, and the full lines in *status.
    */
-  showUpdate(update: UpdateNotice, text: string): void {
+  showUpdate(update: UpdateNotice, lines: string[]): void {
     this.update = { ...update };
-    this.addAppNotice(text);
+    for (const line of lines) this.addAppNotice(line);
     this.emit();
   }
 

@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { UpdateNotice } from "./types.ts";
-import { compareVersions, defaultReceiptPath, latestRelease, readReceipt } from "./upgrade.ts";
+import { compareVersions, defaultReceiptPath, latestRelease, readReceipt, REPO } from "./upgrade.ts";
 import { VERSION } from "./version.ts";
 
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -30,8 +30,8 @@ export interface UpdateCheckOptions {
   timeoutMs: number;
   /** True when `honk upgrade` can replace this copy, so the notice can suggest it. */
   upgradeable: () => boolean;
-  /** Gets the notice for the status bar, and the full sentence for *status. */
-  notify: (update: UpdateNotice, text: string) => void;
+  /** Gets the notice for the status bar, and the lines for *status. */
+  notify: (update: UpdateNotice, lines: string[]) => void;
 }
 
 export function defaultCachePath(env: NodeJS.ProcessEnv = process.env): string {
@@ -77,9 +77,21 @@ function writeCache(path: string, cache: UpdateCache): void {
   }
 }
 
-export function noticeText(current: string, latest: string, upgradeable: boolean): string {
+/** The GitHub page with the release notes of `tag`. */
+export function releaseNotesUrl(tag: string): string {
+  return `https://github.com/${REPO}/releases/tag/${encodeURIComponent(tag)}`;
+}
+
+/**
+ * The lines for *status: what to do, and where to read what changed. The link
+ * has its own line, so it does not wrap in the middle of the sentence.
+ */
+export function noticeLines(current: string, latest: string, upgradeable: boolean): string[] {
   const how = upgradeable ? "Run: honk upgrade" : "Update it the way you installed it.";
-  return `honk ${latest} is available (you have ${current}). ${how}`;
+  return [
+    `honk ${latest} is available (you have ${current}). ${how}`,
+    `What's new in ${latest}: ${releaseNotesUrl(latest)}`,
+  ];
 }
 
 /**
@@ -107,7 +119,7 @@ export async function checkForUpdate(o: UpdateCheckOptions): Promise<void> {
   // so an odd tag never shows a notice.
   if (latest !== undefined && compareVersions(latest, o.version) > 0) {
     const upgradeable = o.upgradeable();
-    o.notify({ latest, upgradeable }, noticeText(o.version, latest, upgradeable));
+    o.notify({ latest, upgradeable }, noticeLines(o.version, latest, upgradeable));
   }
 }
 
