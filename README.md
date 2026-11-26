@@ -95,6 +95,9 @@ reads the tag: nothing is downloaded until you run `honk upgrade`. To turn the
 check off, set `HONK_NO_UPDATE_CHECK=1`. It is also off when `CI` is set and in
 `--demo`.
 
+Behind a proxy, `honk upgrade` and the update check use `HTTPS_PROXY` (or
+`ALL_PROXY`) and skip the hosts in `NO_PROXY`, like curl does.
+
 ### Uninstall
 
 If you installed honk with the install script, delete the binary, the install
