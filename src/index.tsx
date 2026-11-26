@@ -69,6 +69,7 @@ if (!g.__ircHot) {
     renderer.on("focus", () => notifier.setFocused(true));
     renderer.on("blur", () => notifier.setFocused(false));
     manager.onMention((event) => notifier.notify(event));
+    manager.onMissedMentions((events) => notifier.notifyMissed(events));
   }
 
   // On SIGTERM or SIGHUP (kill, a closed terminal, a dropped SSH session),

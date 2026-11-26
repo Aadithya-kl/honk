@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  formatMissedSummary,
   formatNotification,
   MAX_BODY_LENGTH,
   type MentionEvent,
@@ -118,5 +119,41 @@ describe("Notifier", () => {
     expect(notifier.notify(event())).toBe(false);
     expect(notifier.notify(event())).toBe(false);
     expect(sent.length).toBe(2);
+  });
+});
+
+describe("missed mentions", () => {
+  test("one missed mention gets the usual notification", () => {
+    const { notifier, sent } = setup();
+    expect(notifier.notifyMissed([event()])).toBe(true);
+    expect(sent).toEqual([{ message: "goose: ping", title: "alice in #honk" }]);
+  });
+
+  test("several get one summary", () => {
+    const { notifier, sent } = setup();
+    notifier.notifyMissed([
+      event(),
+      event({ from: "bob" }),
+      event({ bufferKind: "dm", bufferName: "carol", from: "carol" }),
+    ]);
+    expect(sent).toEqual([
+      { message: "3 mentions while you were away, in #honk and carol", title: "Missed mentions" },
+    ]);
+  });
+
+  test("skips the buffer on screen while the terminal has focus", () => {
+    const { notifier, sent } = setup();
+    expect(notifier.notifyMissed([event({ isActiveBuffer: true })])).toBe(false);
+    notifier.notifyMissed([event({ isActiveBuffer: true }), event({ bufferName: "#other" })]);
+    expect(sent.map((s) => s.title)).toEqual(["alice in #other"]);
+  });
+
+  test("the summary names three or more places", () => {
+    const body = formatMissedSummary([
+      event({ bufferName: "#a" }),
+      event({ bufferName: "#b" }),
+      event({ bufferName: "#c" }),
+    ]);
+    expect(body).toBe("3 mentions while you were away, in #a, #b and #c");
   });
 });

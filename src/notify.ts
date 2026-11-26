@@ -84,4 +84,28 @@ export class Notifier {
     this.lastSent.set(key, now);
     return true;
   }
+
+  /**
+   * Mentions you missed while the connection was down, found in the chat history after
+   * the reconnect. One mention gets the usual notification; several get one summary,
+   * not a burst of banners.
+   */
+  notifyMissed(events: MentionEvent[]): boolean {
+    const unseen = events.filter((e) => !(this.focused && e.isActiveBuffer));
+    if (unseen.length === 0) return false;
+    if (unseen.length === 1) return this.notify(unseen[0]!);
+    return this.send(formatMissedSummary(unseen), "Missed mentions");
+  }
+}
+
+/** "3 mentions while you were away, in #honk and alice". */
+export function formatMissedSummary(events: MentionEvent[]): string {
+  const places = [...new Set(events.map((e) => (e.bufferKind === "dm" ? e.from : e.bufferName)))];
+  const where =
+    places.length === 1
+      ? places[0]
+      : `${places.slice(0, -1).join(", ")} and ${places[places.length - 1]}`;
+  let body = `${events.length} mentions while you were away, in ${where}`;
+  if (body.length > MAX_BODY_LENGTH) body = `${body.slice(0, MAX_BODY_LENGTH - 3)}...`;
+  return body;
 }

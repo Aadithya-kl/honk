@@ -22,6 +22,7 @@ import {
 import type { MentionEvent } from "../notify.ts";
 import { SLASH_COMMANDS } from "./commands.ts";
 import { DELIVERY_TIMEOUT_MS, DeliveryTracker, type SentLine } from "./delivery.ts";
+import { isMissedLine, isMissedMention, type MissedWindow } from "./missed.ts";
 import { NetworkWatcher } from "./netwatch.ts";
 import {
   DEMO_AMBIENT,
@@ -84,6 +85,13 @@ interface ServerControl {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   connectTimer: ReturnType<typeof setTimeout> | null;
   stableTimer: ReturnType<typeof setTimeout> | null;
+  /** When this connection last received anything from the server (local clock, ms). */
+  lastHeardAt?: number;
+  /** Set when a registered connection is lost. See missed.ts. */
+  missed?: MissedWindow;
+  /** Missed mentions found in history, waiting to be reported as one batch. */
+  missedMentions: MentionEvent[];
+  missedTimer: ReturnType<typeof setTimeout> | null;
 }
 
 function createControl(): ServerControl {
@@ -97,8 +105,16 @@ function createControl(): ServerControl {
     reconnectTimer: null,
     connectTimer: null,
     stableTimer: null,
+    missedMentions: [],
+    missedTimer: null,
   };
 }
+
+/**
+ * History for all channels arrives in separate batches after the rejoin. Wait this long
+ * after the last missed mention before reporting them, so they go out as one summary.
+ */
+const MISSED_REPORT_DELAY_MS = 3_000;
 
 /**
  * The TLS error code if the server's certificate was rejected (self-signed, expired,
@@ -278,6 +294,7 @@ export class IrcManager {
   private active: ActiveBuffer | null = null;
   private listeners = new Set<() => void>();
   private mentionListeners = new Set<(event: MentionEvent) => void>();
+  private missedListeners = new Set<(events: MentionEvent[]) => void>();
   /** Confirms that the lines you send reach the server. See delivery.ts. */
   private delivery = new DeliveryTracker({
     delivered: (serverId, lines) => this.setDelivery(serverId, lines, undefined),
@@ -409,6 +426,15 @@ export class IrcManager {
   onMention(listener: (event: MentionEvent) => void): () => void {
     this.mentionListeners.add(listener);
     return () => this.mentionListeners.delete(listener);
+  }
+
+  /**
+   * Calls `listener` with the mentions and DMs you missed while a connection was down,
+   * once the history after the reconnect has arrived. See missed.ts.
+   */
+  onMissedMentions(listener: (events: MentionEvent[]) => void): () => void {
+    this.missedListeners.add(listener);
+    return () => this.missedListeners.delete(listener);
   }
 
   private emitQueued = false;
@@ -553,6 +579,7 @@ export class IrcManager {
     this.clearServerTimers(ctrl);
     ctrl.manualDisconnect = false;
     ctrl.fatalError = false;
+    this.noteConnectionLost(serverId, ctrl);
     ctrl.registered = false;
     ctrl.nickCollisionTries = 0;
     if (opts.manual) {
@@ -680,6 +707,7 @@ export class IrcManager {
   disconnectServer(serverId: string, reason = "Leaving"): void {
     const ctrl = this.getControl(serverId);
     ctrl.manualDisconnect = true;
+    this.noteConnectionLost(serverId, ctrl);
     ctrl.registered = false;
     this.clearServerTimers(ctrl);
     this.forgetRequestedJoins(serverId);
@@ -789,6 +817,12 @@ export class IrcManager {
       }
     });
 
+    // Anything from the server shows the connection worked until now. See missed.ts.
+    client.on("raw", () => {
+      if (isStale()) return;
+      this.getControl(serverId).lastHeardAt = Date.now();
+    });
+
     // The PONG for a PING sent after your line: the line reached the server.
     client.on("pong", (msg) => {
       if (isStale()) return;
@@ -859,6 +893,7 @@ export class IrcManager {
       if (!server) return;
       const ctrl = this.getControl(serverId);
 
+      this.noteConnectionLost(serverId, ctrl);
       ctrl.registered = false;
       this.forgetRequestedJoins(serverId);
       this.failPendingLines(serverId);
@@ -1461,6 +1496,14 @@ export class IrcManager {
       if (isDup) return;
     }
 
+    // A history line that arrived while the connection was down counts as unread, and
+    // as a mention if it is for you. See missed.ts.
+    const ctrl = this.controls.get(serverId);
+    const missed = isMissedLine(ctrl?.missed, bufferName, message);
+    if (missed && isMissedMention(ctrl!.missed!, buf.kind, message, server.nick, mentionsNick)) {
+      message = { ...message, isMention: true };
+    }
+
     // Live lines go at the end. History lines (CHATHISTORY playback, /history BEFORE)
     // are inserted in time order; the scan from the end replaces a full re-sort.
     const messages = [...buf.messages];
@@ -1482,7 +1525,7 @@ export class IrcManager {
       this.active?.serverId === serverId && this.active.buffer === bufferName;
     const countsAsUnread =
       !isActive &&
-      !message.isHistory &&
+      (!message.isHistory || missed) &&
       !message.isSelf &&
       (message.kind === "message" || message.kind === "action");
 
@@ -1511,7 +1554,40 @@ export class IrcManager {
         isActiveBuffer: isActive,
       };
       for (const listener of this.mentionListeners) listener(event);
+    } else if (missed && message.isMention) {
+      this.queueMissedMention(serverId, {
+        serverId,
+        bufferName,
+        bufferKind: buf.kind,
+        kind: message.kind,
+        from: message.from ?? "",
+        text: message.text,
+        isActiveBuffer: isActive,
+      });
     }
+  }
+
+  /** Remembers what honk knew when a registered connection is lost. See missed.ts. */
+  private noteConnectionLost(serverId: string, ctrl: ServerControl): void {
+    const server = this.servers.get(serverId);
+    if (!server || !ctrl.registered || ctrl.lastHeardAt === undefined) return;
+    ctrl.missed = {
+      since: ctrl.lastHeardAt,
+      nick: server.nick,
+      buffers: new Set(server.bufferOrder),
+    };
+  }
+
+  private queueMissedMention(serverId: string, event: MentionEvent): void {
+    const ctrl = this.getControl(serverId);
+    ctrl.missedMentions.push(event);
+    if (ctrl.missedTimer) clearTimeout(ctrl.missedTimer);
+    ctrl.missedTimer = setTimeout(() => {
+      ctrl.missedTimer = null;
+      const events = ctrl.missedMentions;
+      ctrl.missedMentions = [];
+      for (const listener of this.missedListeners) listener(events);
+    }, MISSED_REPORT_DELAY_MS);
   }
 
   private clearUnreadDivider(serverId: string, bufferName: string): void {
