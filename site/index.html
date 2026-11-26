@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>honk - a terminal IRC client</title>
+<meta name="description" content="honk is a fast, keyboard-driven IRC client for the terminal. One file to install, for macOS and Linux.">
+<meta property="og:title" content="honk - a terminal IRC client">
+<meta property="og:description" content="A fast, keyboard-driven IRC client for the terminal. One file to install, for macOS and Linux.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://agustingianni.github.io/honk/">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231a1b26'/%3E%3Ctext x='16' y='23' font-family='monospace' font-size='20' font-weight='700' text-anchor='middle' fill='%237aa2f7'%3Eh%3C/text%3E%3C/svg%3E">
+<style>
+  /* Colors from honk's own theme (src/theme.ts). */
+  :root {
+    --bg: #1a1b26;
+    --bg-deep: #13141c;
+    --surface: #1f2335;
+    --line: #3b4261;
+    --fg: #c0caf5;
+    --fg-bright: #e2e8ff;
+    --fg-muted: #737aa2;
+    --accent: #7aa2f7;
+    --accent-alt: #bb9af7;
+    --green: #9ece6a;
+    --yellow: #e0af68;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 var(--mono);
+  }
+  main {
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: 4rem 1rem 3rem;
+  }
+  h1 {
+    margin: 0;
+    font-size: 2.5rem;
+    line-height: 1.1;
+    color: var(--fg-bright);
+  }
+  h1 .prompt { color: var(--accent); }
+  .tagline {
+    margin: 0.75rem 0 2.5rem;
+    font-size: 1.1rem;
+    color: var(--fg);
+  }
+  h2 {
+    margin: 2.75rem 0 0.75rem;
+    font-size: 1rem;
+    color: var(--accent-alt);
+    text-transform: lowercase;
+  }
+  h2::before { content: "# "; color: var(--fg-muted); }
+  p { margin: 0 0 1rem; }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:hover { color: var(--fg-bright); }
+  code {
+    font-family: var(--mono);
+    color: var(--fg-bright);
+  }
+
+  .install {
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-deep);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .install pre {
+    flex: 1;
+    margin: 0;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    font-size: 0.95rem;
+  }
+  .install pre::before { content: "$ "; color: var(--fg-muted); }
+  .install button {
+    flex: none;
+    border: 0;
+    border-left: 1px solid var(--line);
+    padding: 0 1rem;
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .install button:hover { color: var(--fg-bright); background: var(--line); }
+  .install button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .note {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+  }
+  .note a { color: var(--fg-muted); }
+  .note a:hover { color: var(--fg); }
+
+  ul.features {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  ul.features li {
+    position: relative;
+    padding-left: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+  ul.features li::before {
+    content: "*";
+    position: absolute;
+    left: 0;
+    color: var(--green);
+  }
+
+  table.keys {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  table.keys td {
+    padding: 0.35rem 0;
+    vertical-align: top;
+    border-bottom: 1px solid var(--surface);
+  }
+  table.keys td:first-child {
+    width: 9.5rem;
+    padding-right: 1rem;
+    white-space: nowrap;
+  }
+  kbd {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    color: var(--yellow);
+    background: var(--bg-deep);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 0.05rem 0.35rem;
+  }
+
+  footer {
+    margin-top: 3.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--surface);
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+  }
+  footer a { color: var(--fg-muted); }
+  footer a:hover { color: var(--fg); }
+
+  @media (max-width: 480px) {
+    main { padding-top: 2.5rem; }
+    h1 { font-size: 2rem; }
+    .install pre { font-size: 0.8rem; }
+    table.keys td:first-child { width: 7.5rem; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="prompt">&gt;</span> honk</h1>
+  <p class="tagline">A fast, keyboard-driven IRC client for your terminal.</p>
+
+  <div class="install">
+    <pre id="cmd">curl -fsSL https://agustingianni.github.io/honk/install.sh | sh</pre>
+    <button type="button" id="copy" aria-label="Copy the install command">copy</button>
+  </div>
+  <p class="note">
+    macOS and Linux, Apple Silicon and Intel. One file, no runtime to install.
+    The script checks the download's checksum and puts <code>honk</code> in
+    <code>~/.local/bin</code>, without sudo.
+    <a href="https://github.com/agustingianni/honk/blob/main/site/install.sh">Read the script</a> or
+    <a href="https://github.com/agustingianni/honk/releases/latest">download a binary yourself</a>.
+  </p>
+
+  <h2>Start</h2>
+  <p>Connect to a server and join a channel:</p>
+  <div class="install">
+    <pre>honk --server irc.libera.chat --nick your_nick --channel '#libera'</pre>
+  </div>
+  <p class="note">
+    To connect to several servers when honk starts, write a
+    <a href="https://github.com/agustingianni/honk#configuration">config file</a>.
+  </p>
+
+  <h2>What you get</h2>
+  <ul class="features">
+    <li>An omnibox: press <kbd>Ctrl</kbd>+<kbd>K</kbd> and type to jump to any channel, DM or person, or to run a command.</li>
+    <li>Several servers at once, with TLS by default and SASL login.</li>
+    <li>Older messages load from the server, on networks that support chat history.</li>
+    <li>Messages you send from your phone or another client show up here too.</li>
+    <li>mIRC colors, a color for each nick, a marker at your first unread line, and highlighted mentions.</li>
+  </ul>
+
+  <h2>Keys</h2>
+  <table class="keys">
+    <tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>Open the omnibox</td></tr>
+    <tr><td><kbd>Alt</kbd>+<kbd>Up</kbd> / <kbd>Down</kbd></td><td>Previous or next channel or DM</td></tr>
+    <tr><td><kbd>Tab</kbd></td><td>Complete a nick or a command</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>B</kbd></td><td>Show or hide the channel list</td></tr>
+    <tr><td><kbd>Alt</kbd>+<kbd>U</kbd></td><td>Show or hide the user list</td></tr>
+    <tr><td><code>/help</code></td><td>List every command</td></tr>
+  </table>
+
+  <footer>
+    <a href="https://github.com/agustingianni/honk">Source on GitHub</a> &middot;
+    <a href="https://github.com/agustingianni/honk/issues">Report a bug</a> &middot;
+    MIT license &middot;
+    Made by goose
+  </footer>
+</main>
+<script>
+  // Copy the install command. Falls back to selecting the text if the
+  // clipboard API is not available (for example, on a non-HTTPS preview).
+  (function () {
+    var button = document.getElementById("copy");
+    var cmd = document.getElementById("cmd");
+    button.addEventListener("click", function () {
+      var text = cmd.textContent;
+      function done() {
+        button.textContent = "copied";
+        setTimeout(function () { button.textContent = "copy"; }, 1500);
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, select);
+      } else {
+        select();
+      }
+      function select() {
+        var range = document.createRange();
+        range.selectNodeContents(cmd);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    });
+  })();
+</script>
+</body>
+</html>

@@ -4,7 +4,26 @@ A terminal IRC client, built with [Bun](https://bun.sh) and [OpenTUI](https://gi
 
 ## Install
 
-Download the binary for your platform from the
+On macOS or Linux:
+
+```sh
+curl -fsSL https://agustingianni.github.io/honk/install.sh | sh
+```
+
+The [script](site/install.sh) picks the binary for your OS and CPU, checks its
+SHA-256 checksum, and puts it in `~/.local/bin`. It never uses sudo and never
+edits your shell config. Settings:
+
+- `HONK_VERSION=v0.1.0` installs that release instead of the latest one.
+- `HONK_INSTALL_DIR=~/bin` installs into another folder.
+
+```sh
+curl -fsSL https://agustingianni.github.io/honk/install.sh | HONK_VERSION=v0.1.0 sh
+```
+
+### Install by hand
+
+Download `honk-<os>-<cpu>` from the
 [latest release](https://github.com/agustingianni/honk/releases/latest).
 Use `curl` rather than a browser: on macOS, a file downloaded in a browser is
 quarantined, and Gatekeeper blocks it because the binary is not signed.
@@ -19,19 +38,20 @@ curl -fL -o ~/.local/bin/honk \
 chmod +x ~/.local/bin/honk
 ```
 
-Make sure `~/.local/bin` is on your `PATH`.
-
-Each binary is signed with a build provenance attestation. To check that your
-download was built by this repo's release workflow from a tagged commit:
-
-```sh
-gh attestation verify ~/.local/bin/honk -R agustingianni/honk
-```
-
 If you downloaded it in a browser anyway, remove the quarantine flag:
 
 ```sh
 xattr -d com.apple.quarantine ~/.local/bin/honk
+```
+
+### Check a download
+
+Each release has a `SHA256SUMS` file. Each binary is also signed with a build
+provenance attestation. To check that your binary was built by this repo's
+release workflow from a tagged commit:
+
+```sh
+gh attestation verify ~/.local/bin/honk -R agustingianni/honk
 ```
 
 ## Usage
@@ -66,6 +86,12 @@ curl -fL -o ~/.config/honk/config.json \
 Each server takes `host`, `nick`, and optionally `port`, `tls`, `channels`,
 `username`, `realname`, `password`, `serverPassword`, `authMethod`
 (`sasl`, `saslExternal` or `NickServ`) and `autoConnect`.
+
+## Website
+
+The website is the plain HTML in `site/`. A push to `main` that changes
+`site/` publishes it to https://agustingianni.github.io/honk/ through the
+`pages` workflow. `site/install.sh` is the install script above.
 
 ## Development
 
