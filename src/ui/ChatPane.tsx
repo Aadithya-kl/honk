@@ -1,6 +1,6 @@
-import type { InputRenderable } from "@opentui/core";
+import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { memo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { sameNick, STATUS_BUFFER } from "../irc/names.ts";
 import { nickColor, theme } from "../theme.ts";
 import type { BufferState, ChatMessage, ServerState } from "../types.ts";
@@ -20,6 +20,16 @@ const NICK_COL_WIDTH = 12;
 const BLANK_TIME = "     ";
 const BLANK_NICK = " ".repeat(NICK_COL_WIDTH);
 const GROUP_WINDOW_MS = 5 * 60_000;
+/** Lines per mouse wheel notch. */
+const WHEEL_LINES = 3;
+const WHEEL_ACCEL = { tick: () => WHEEL_LINES, reset: () => {} };
+/** Lines per Shift+Up / Shift+Down. */
+const SHIFT_SCROLL_LINES = 3;
+
+/** Lines that the "new messages below" bar counts. */
+function isChatLine(m: ChatMessage): boolean {
+  return (m.kind === "message" || m.kind === "action" || m.kind === "notice") && !m.isSelf;
+}
 
 function formatTime(date: Date): string {
   const hh = String(date.getHours()).padStart(2, "0");
@@ -136,6 +146,7 @@ const MessageRow = memo(function MessageRow({
 
 export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: ChatPaneProps) {
   const inputRef = useRef<InputRenderable>(null);
+  const scrollRef = useRef<ScrollBoxRenderable>(null);
   const [inputValue, setInputValue] = useState("");
 
   // Tab completion state
@@ -189,6 +200,16 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
       return;
     }
 
+    const sb = scrollRef.current;
+    if (key.name === "pageup" || key.name === "pagedown") {
+      sb?.scrollBy(key.name === "pageup" ? -0.5 : 0.5, "viewport");
+      return;
+    }
+    if (key.shift && (key.name === "up" || key.name === "down")) {
+      sb?.scrollBy(key.name === "up" ? -SHIFT_SCROLL_LINES : SHIFT_SCROLL_LINES);
+      return;
+    }
+
     // Up/Down and Ctrl+P/Ctrl+N (as in readline) walk the sent-line history.
     const plain = !key.meta && !key.option && !key.ctrl && !key.shift;
     const historyUp = (key.name === "up" && plain) || (key.ctrl && key.name === "p");
@@ -221,6 +242,37 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
       }
     }
   });
+
+  // "New messages below": the id of the last line on screen when the view left the
+  // bottom, or null while the view is at the bottom.
+  const bufferKey = `${server?.id ?? ""}:${buffer?.name ?? ""}`;
+  const [lastSeenId, setLastSeenId] = useState<string | null>(null);
+  const messagesRef = useRef(buffer?.messages ?? []);
+  messagesRef.current = buffer?.messages ?? [];
+  useEffect(() => {
+    setLastSeenId(null);
+    const sb = scrollRef.current;
+    if (!sb) return;
+    const onChange = () => {
+      const atBottom = sb.scrollTop + sb.viewport.height >= sb.scrollHeight - 1;
+      setLastSeenId((prev) => {
+        if (atBottom) return null;
+        if (prev !== null) return prev;
+        const msgs = messagesRef.current;
+        return msgs[msgs.length - 1]?.id ?? "";
+      });
+    };
+    sb.verticalScrollBar.on("change", onChange);
+    return () => {
+      sb.verticalScrollBar.off("change", onChange);
+    };
+  }, [bufferKey]);
+  let newBelow = 0;
+  if (lastSeenId !== null && buffer) {
+    const at = buffer.messages.findIndex((m) => m.id === lastSeenId);
+    newBelow = buffer.messages.slice(at + 1).filter(isChatLine).length;
+  }
+  const jumpToBottom = () => scrollRef.current?.scrollTo(scrollRef.current.scrollHeight);
 
   const title = buffer ? buffer.name : STATUS_BUFFER;
   // Cut at the end to fit beside the title and the user count (2 + 2 padding,
@@ -255,6 +307,8 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
     completionRef.current = null;
     onSubmit(text);
     setInputText("");
+    // Sending a line means you want to see it, even if you had scrolled up.
+    scrollRef.current?.scrollTo(scrollRef.current.scrollHeight);
   };
 
   return (
@@ -294,8 +348,13 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
       </box>
 
       {/* Scrollable message feed */}
+      {/* Keyed by buffer: each buffer gets its own scroll position and starts at the
+          bottom, so scrolling one buffer never leaves another one scrolled up. */}
       <scrollbox
+        key={bufferKey}
+        ref={scrollRef}
         flexGrow={1}
+        scrollAcceleration={WHEEL_ACCEL}
         stickyScroll
         stickyStart="bottom"
         scrollX={false}
@@ -322,6 +381,20 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
           })}
         </box>
       </scrollbox>
+
+      {newBelow > 0 && (
+        <box
+          height={1}
+          paddingLeft={2}
+          backgroundColor={theme.bgActiveRow}
+          onMouseDown={jumpToBottom}
+        >
+          <text fg={theme.accent}>
+            {newBelow} new {newBelow === 1 ? "message" : "messages"} below{" "}
+            <span fg={theme.fgMuted}>(PgDn or click to read)</span>
+          </text>
+        </box>
+      )}
 
       {/* Shaded prompt input bar */}
       <box
