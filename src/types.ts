@@ -19,6 +19,8 @@ export interface ServerConfig {
 
 export interface AppConfig {
   servers: ServerConfig[];
+  /** Desktop notifications for mentions and DMs. On unless set to false. See src/notify.ts. */
+  notifications?: boolean;
 }
 
 export type ConnectionStatus =

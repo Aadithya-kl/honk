@@ -4,6 +4,7 @@ import { App } from "./App.tsx";
 import { cliAction, HELP, unknownCommandText } from "./cli.ts";
 import { loadConfig } from "./config.ts";
 import { IrcManager } from "./irc/manager.ts";
+import { Notifier } from "./notify.ts";
 import { startUpdateCheck } from "./updateCheck.ts";
 import { runUpgrade } from "./upgrade.ts";
 import { versionLine } from "./version.ts";
@@ -59,6 +60,16 @@ if (!g.__ircHot) {
     autoFocus: false,
   });
   const root = createRoot(renderer);
+
+  // Mentions and DMs become desktop notifications, shown by the terminal. See src/notify.ts.
+  if (config.notifications !== false) {
+    const notifier = new Notifier((message, title) =>
+      renderer.triggerNotification(message, title),
+    );
+    renderer.on("focus", () => notifier.setFocused(true));
+    renderer.on("blur", () => notifier.setFocused(false));
+    manager.onMention((event) => notifier.notify(event));
+  }
 
   // On SIGTERM or SIGHUP (kill, a closed terminal, a dropped SSH session),
   // OpenTUI catches the signal and shuts the renderer down. Catching it stops the

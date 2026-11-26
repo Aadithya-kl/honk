@@ -58,8 +58,10 @@ function readConfigFile(path: string): AppConfig | null {
   if (!existsSync(path)) return null;
   const raw = readFileSync(path, "utf-8");
   const parsed = JSON.parse(raw) as Partial<AppConfig>;
-  if (!Array.isArray(parsed.servers)) return { servers: [] };
+  const notifications = parsed.notifications !== false;
+  if (!Array.isArray(parsed.servers)) return { servers: [], notifications };
   return {
+    notifications,
     servers: parsed.servers.map((s, idx) => ({
       id: s.id || s.name || s.host || `server-${idx + 1}`,
       name: s.name || s.id || s.host,
@@ -156,6 +158,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
       : cliServer;
 
     config = {
+      ...config,
       servers: [merged, ...config.servers.filter((s) => s !== existing)],
     };
   }

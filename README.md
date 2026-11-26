@@ -156,6 +156,31 @@ Each server takes `host`, `nick`, and optionally `port`, `tls`, `channels`,
 `username`, `realname`, `password`, `serverPassword`, `authMethod`
 (`sasl`, `saslExternal` or `NickServ`) and `autoConnect`.
 
+### Notifications
+
+When someone mentions your nick or sends you a DM, honk shows a desktop
+notification. It does not notify for the buffer on screen while the terminal
+window has focus, and it sends at most one notification per buffer every 10
+seconds.
+
+honk asks your terminal to show the notification, so it works over SSH too: the
+notification appears on the computer you are sitting at. Terminals that support
+it include iTerm2, Ghostty, WezTerm, kitty, foot, GNOME Terminal and other VTE
+terminals, and Windows Terminal. In other terminals, honk shows no notification.
+
+Inside tmux, let the notification through to the outer terminal:
+
+```sh
+# ~/.tmux.conf
+set -g allow-passthrough on
+```
+
+To turn notifications off, add this to the top level of the config file:
+
+```json
+{ "notifications": false, "servers": [] }
+```
+
 ## Website
 
 The website is the plain HTML in `site/`. A push to `main` that changes

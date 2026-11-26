@@ -19,6 +19,7 @@ import {
   sameNick,
   STATUS_BUFFER,
 } from "./names.ts";
+import type { MentionEvent } from "../notify.ts";
 import { SLASH_COMMANDS } from "./commands.ts";
 import {
   DEMO_AMBIENT,
@@ -274,6 +275,7 @@ export class IrcManager {
   private serverOrder: string[] = [];
   private active: ActiveBuffer | null = null;
   private listeners = new Set<() => void>();
+  private mentionListeners = new Set<(event: MentionEvent) => void>();
   private snapshot: StoreSnapshot = { servers: [], active: null, update: null };
   private update: UpdateNotice | null = null;
   private wakeInterval: ReturnType<typeof setInterval> | null = null;
@@ -364,6 +366,12 @@ export class IrcManager {
   };
 
   getSnapshot = (): StoreSnapshot => this.snapshot;
+
+  /** Calls `listener` for each live mention or DM, not for history playback or your own lines. */
+  onMention(listener: (event: MentionEvent) => void): () => void {
+    this.mentionListeners.add(listener);
+    return () => this.mentionListeners.delete(listener);
+  }
 
   private emitQueued = false;
 
@@ -1379,6 +1387,19 @@ export class IrcManager {
       },
     };
     this.emit();
+
+    if (message.isMention && !message.isHistory && !message.isSelf) {
+      const event: MentionEvent = {
+        serverId,
+        bufferName,
+        bufferKind: buf.kind,
+        kind: message.kind,
+        from: message.from ?? "",
+        text: message.text,
+        isActiveBuffer: isActive,
+      };
+      for (const listener of this.mentionListeners) listener(event);
+    }
   }
 
   private clearUnreadDivider(serverId: string, bufferName: string): void {
