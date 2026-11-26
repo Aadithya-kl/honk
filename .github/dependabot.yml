@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week before suggesting a new version. Most malicious releases are
+    # found and removed within days.
+    cooldown:
+      default-days: 7
     ignore:
       # TypeScript major versions need config and code changes; upgrade by hand.
       - dependency-name: typescript
@@ -15,3 +19,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

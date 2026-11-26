@@ -21,6 +21,13 @@ chmod +x ~/.local/bin/honk
 
 Make sure `~/.local/bin` is on your `PATH`.
 
+Each binary is signed with a build provenance attestation. To check that your
+download was built by this repo's release workflow from a tagged commit:
+
+```sh
+gh attestation verify ~/.local/bin/honk -R agustingianni/honk
+```
+
 If you downloaded it in a browser anyway, remove the quarantine flag:
 
 ```sh

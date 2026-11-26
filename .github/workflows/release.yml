@@ -3,20 +3,56 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  # Runs third-party code (packages, the compiler), so it gets read access only.
+  build:
+    name: Build binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.10
+          no-cache: true # a release must not read a cache that another run wrote
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run release
-      - run: gh release create "$GITHUB_REF_NAME" dist/honk-* --generate-notes
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries
+          path: dist/honk-*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Runs no third-party build code. It signs the binaries and creates the release.
+  publish:
+    name: Attest and publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+      id-token: write # get the OIDC token that signs the attestation
+      attestations: write # store the attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/honk-*
+      - run: gh release create "$GITHUB_REF_NAME" dist/honk-* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
