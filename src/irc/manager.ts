@@ -364,7 +364,7 @@ export class IrcManager {
       ),
       makeMessage(
         "system",
-        "Or create irc.json (see irc.example.json) for multi-server auto-connect. Type /help for commands.",
+        "Or create honk.json (see honk.example.json) for multi-server auto-connect. Type /help for commands.",
       ),
     );
     const server: ServerState = {

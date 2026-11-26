@@ -1,6 +1,6 @@
 node_modules/
 dist/
-irc.json
+honk.json
 .env
 .env.local
 .DS_Store

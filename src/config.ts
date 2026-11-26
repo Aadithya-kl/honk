@@ -87,8 +87,8 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
   if (typeof flags.config === "string") {
     candidates.push(resolve(flags.config));
   } else {
-    candidates.push(resolve("irc.json"));
-    candidates.push(join(homedir(), ".config", "irc", "config.json"));
+    candidates.push(resolve("honk.json"));
+    candidates.push(join(homedir(), ".config", "honk", "config.json"));
   }
 
   let config: AppConfig = { servers: [] };

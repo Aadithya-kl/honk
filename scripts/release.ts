@@ -10,7 +10,7 @@ await $`bun install --os=${all} --cpu=${all}`;
 await $`rm -rf dist`;
 
 for (const target of targets) {
-  await $`bun build src/index.tsx --compile --minify --target=bun-${target} --outfile dist/irc-${target}`;
+  await $`bun build src/index.tsx --compile --minify --target=bun-${target} --outfile dist/honk-${target}`;
 }
 
 await $`ls -lh dist`;
