@@ -110,6 +110,28 @@ describe("DeliveryTracker", () => {
     expect(timedOut).toEqual([]);
   });
 
+  test("a probe with no PONG times out with no lines", () => {
+    const { tracker, timedOut, timers, pings } = setup();
+    tracker.probe("libera", (token) => pings.push(token));
+    expect(pings).toEqual(["honk-1"]);
+    timers.advance(DELIVERY_TIMEOUT_MS);
+    expect(timedOut).toEqual([["libera", []]]);
+  });
+
+  test("a probe's PONG confirms earlier lines but reports no line of its own", () => {
+    const { tracker, delivered, timedOut, timers, pings, send } = setup();
+    send("libera", "1");
+    tracker.probe("libera", (token) => pings.push(token));
+    tracker.pong("libera", "honk-2");
+    expect(delivered).toEqual([["libera", [line("1")]]]);
+    // A probe alone is confirmed quietly.
+    tracker.probe("libera", (token) => pings.push(token));
+    tracker.pong("libera", "honk-3");
+    expect(delivered.length).toBe(1);
+    timers.advance(DELIVERY_TIMEOUT_MS);
+    expect(timedOut).toEqual([]);
+  });
+
   test("drop returns the waiting lines and cancels their timers", () => {
     const { tracker, timedOut, timers, send } = setup();
     send("libera", "1");

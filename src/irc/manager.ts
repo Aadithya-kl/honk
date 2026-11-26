@@ -22,6 +22,7 @@ import {
 import type { MentionEvent } from "../notify.ts";
 import { SLASH_COMMANDS } from "./commands.ts";
 import { DELIVERY_TIMEOUT_MS, DeliveryTracker, type SentLine } from "./delivery.ts";
+import { NetworkWatcher } from "./netwatch.ts";
 import {
   DEMO_AMBIENT,
   DEMO_HISTORY,
@@ -282,6 +283,10 @@ export class IrcManager {
     delivered: (serverId, lines) => this.setDelivery(serverId, lines, undefined),
     timedOut: (serverId, lines) => this.deliveryTimedOut(serverId, lines),
   });
+  /** Notices Wi-Fi going off and on, or a move to another network. See netwatch.ts. */
+  private netWatcher = new NetworkWatcher({
+    onChange: (online) => this.handleNetworkChange(online),
+  });
   private snapshot: StoreSnapshot = { servers: [], active: null, update: null };
   private update: UpdateNotice | null = null;
   private wakeInterval: ReturnType<typeof setInterval> | null = null;
@@ -291,6 +296,7 @@ export class IrcManager {
 
   constructor() {
     this.startWakeWatcher();
+    this.netWatcher.start();
   }
 
   private startWakeWatcher(): void {
@@ -323,6 +329,32 @@ export class IrcManager {
           makeMessage("system", "System wake detected — reconnecting…"),
         );
         void this.connectServer(id, { manual: true });
+      }
+    }
+  }
+
+  /**
+   * The computer's addresses changed. A server waiting to retry tries now, instead of
+   * after its backoff (up to a minute). A connected server gets a PING: if the change
+   * killed its connection, the PING times out and honk reconnects. honk doesn't drop
+   * the connection outright, because one to this machine (a local bouncer) still works.
+   */
+  private handleNetworkChange(online: boolean): void {
+    for (const id of this.serverOrder) {
+      const server = this.servers.get(id);
+      const ctrl = this.controls.get(id);
+      if (!server || !ctrl || !server.config.host) continue;
+      if (ctrl.manualDisconnect || ctrl.fatalError) continue;
+      if (server.status === "reconnecting" && online) {
+        this.pushMessage(
+          id,
+          STATUS_BUFFER,
+          makeMessage("system", "Network changed. Reconnecting now…"),
+        );
+        void this.connectServer(id, { manual: true });
+      } else if (server.status === "connected") {
+        const client = this.clients.get(id);
+        if (client) this.delivery.probe(id, (token) => void client.send("PING", token));
       }
     }
   }
@@ -681,6 +713,7 @@ export class IrcManager {
       clearInterval(this.wakeInterval);
       this.wakeInterval = null;
     }
+    this.netWatcher.stop();
     for (const id of [...this.serverOrder]) {
       if (this.clients.has(id) || this.controls.get(id)?.reconnectTimer) {
         this.disconnectServer(id);

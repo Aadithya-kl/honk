@@ -26,7 +26,10 @@ export interface SentLine {
 export interface DeliveryCallbacks {
   /** These lines reached the server. */
   delivered(serverId: string, lines: SentLine[]): void;
-  /** No PONG in time: these lines may not have arrived, and the connection looks dead. */
+  /**
+   * No PONG in time: the connection looks dead, and these lines may not have arrived.
+   * `lines` is empty when only a probe (see `probe`) was waiting.
+   */
   timedOut(serverId: string, lines: SentLine[]): void;
 }
 
@@ -44,8 +47,13 @@ const TOKEN_PREFIX = "honk-";
 
 interface Probe {
   seq: number;
-  line: SentLine;
+  /** Unset for a probe that only checks the connection. */
+  line?: SentLine;
   timer: unknown;
+}
+
+function linesOf(probes: Probe[]): SentLine[] {
+  return probes.flatMap((p) => (p.line ? [p.line] : []));
 }
 
 export class DeliveryTracker {
@@ -63,6 +71,22 @@ export class DeliveryTracker {
    * timer.
    */
   track(serverId: string, line: SentLine, sendPing: (token: string) => void): void {
+    this.add(serverId, line, sendPing);
+  }
+
+  /**
+   * Checks that the connection still works, with no line attached. Used when the
+   * network changes under a connection that looks open.
+   */
+  probe(serverId: string, sendPing: (token: string) => void): void {
+    this.add(serverId, undefined, sendPing);
+  }
+
+  private add(
+    serverId: string,
+    line: SentLine | undefined,
+    sendPing: (token: string) => void,
+  ): void {
     const seq = this.nextSeq++;
     const timer = this.timers.setTimeout(() => this.timeout(serverId), DELIVERY_TIMEOUT_MS);
     const probes = this.pending.get(serverId) ?? [];
@@ -82,7 +106,8 @@ export class DeliveryTracker {
     if (done.length === 0) return;
     for (const p of done) this.timers.clearTimeout(p.timer);
     this.setPending(serverId, probes.filter((p) => p.seq > seq));
-    this.callbacks.delivered(serverId, done.map((p) => p.line));
+    const lines = linesOf(done);
+    if (lines.length > 0) this.callbacks.delivered(serverId, lines);
   }
 
   /**
@@ -90,15 +115,19 @@ export class DeliveryTracker {
    * connection closes: those lines may not have arrived.
    */
   drop(serverId: string): SentLine[] {
+    return linesOf(this.takeAll(serverId));
+  }
+
+  private takeAll(serverId: string): Probe[] {
     const probes = this.pending.get(serverId) ?? [];
     for (const p of probes) this.timers.clearTimeout(p.timer);
     this.pending.delete(serverId);
-    return probes.map((p) => p.line);
+    return probes;
   }
 
   private timeout(serverId: string): void {
-    const lines = this.drop(serverId);
-    if (lines.length > 0) this.callbacks.timedOut(serverId, lines);
+    const probes = this.takeAll(serverId);
+    if (probes.length > 0) this.callbacks.timedOut(serverId, linesOf(probes));
   }
 
   private setPending(serverId: string, probes: Probe[]): void {
