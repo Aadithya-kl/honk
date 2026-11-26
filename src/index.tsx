@@ -27,6 +27,9 @@ if (!g.__ircHot) {
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,
+    // A left click would otherwise focus the clicked element (the chat scrollbox), and
+    // the input would stop getting keys. Focus moves only through `focused` props.
+    autoFocus: false,
   });
   const root = createRoot(renderer);
 

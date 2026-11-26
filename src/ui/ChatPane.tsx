@@ -189,7 +189,12 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
       return;
     }
 
-    if (key.name === "up" && !key.meta && !key.option && !key.ctrl) {
+    // Up/Down and Ctrl+P/Ctrl+N (as in readline) walk the sent-line history.
+    const plain = !key.meta && !key.option && !key.ctrl && !key.shift;
+    const historyUp = (key.name === "up" && plain) || (key.ctrl && key.name === "p");
+    const historyDown = (key.name === "down" && plain) || (key.ctrl && key.name === "n");
+
+    if (historyUp) {
       const hist = historyRef.current;
       if (hist.length === 0) return;
       completionRef.current = null;
@@ -203,7 +208,7 @@ export function ChatPane({ server, buffer, inputFocused, paneWidth, onSubmit }: 
       return;
     }
 
-    if (key.name === "down" && !key.meta && !key.option && !key.ctrl) {
+    if (historyDown) {
       const hist = historyRef.current;
       if (historyIdxRef.current === -1) return;
       completionRef.current = null;

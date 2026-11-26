@@ -75,7 +75,8 @@ export function App({ manager }: AppProps) {
       setSidebarOpen((v) => !v);
       return;
     }
-    if (key.ctrl && key.name === "u") {
+    // Alt+U, not Ctrl+U: Ctrl+U clears the input line, as in a shell.
+    if ((key.meta || key.option) && key.name === "u") {
       setNicklistOpen((v) => !v);
       return;
     }
@@ -85,15 +86,8 @@ export function App({ manager }: AppProps) {
     }
     if ((key.meta || key.option) && key.name === "down") {
       manager.cycleBuffer(1);
-      return;
     }
-    if (key.ctrl && key.name === "p") {
-      manager.cycleBuffer(-1);
-      return;
-    }
-    if (key.ctrl && key.name === "n") {
-      manager.cycleBuffer(1);
-    }
+    // Ctrl+P / Ctrl+N belong to the input (sent-line history, as in readline).
   });
 
   const activeServer = snapshot.active
