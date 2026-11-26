@@ -1,6 +1,12 @@
 {
   "name": "honk",
   "version": "0.1.0",
+  "description": "A terminal IRC client",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agustingianni/honk.git"
+  },
   "private": true,
   "type": "module",
   "scripts": {
