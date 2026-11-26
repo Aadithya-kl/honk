@@ -12,6 +12,7 @@
  */
 
 import type { BufferKind, ChatMessage } from "../types.ts";
+import { isChannelName, sameNick } from "./names.ts";
 
 /** What honk knew when the connection was lost. */
 export interface MissedWindow {
@@ -64,4 +65,41 @@ export function isMissedMention(
 ): boolean {
   if (bufferKind === "dm") return true;
   return mentionsNick(message.text, window.nick) || mentionsNick(message.text, currentNick);
+}
+
+/** A CHATHISTORY timestamp parameter: "timestamp=2026-11-26T22:00:00.000Z". */
+export function historyTimestamp(ms: number): string {
+  return `timestamp=${new Date(ms).toISOString()}`;
+}
+
+/** The batch types a server uses for a CHATHISTORY TARGETS reply. */
+export const TARGETS_BATCH_TYPES: ReadonlySet<string> = new Set([
+  "draft/chathistory-targets",
+  "chathistory-targets",
+]);
+
+/**
+ * The nicks that wrote to you, from the lines of a CHATHISTORY TARGETS reply:
+ *
+ *   CHATHISTORY TARGETS bob timestamp=2026-11-26T22:02:00.000Z
+ *
+ * irc-client-ts only names the commands in its own table, and CHATHISTORY isn't one,
+ * so these lines arrive with `command` undefined. They are recognized by "TARGETS".
+ *
+ * Channels are left out: honk loads their history when it rejoins them. So is your own
+ * nick (`ownNicks`), which some servers list for notes to yourself.
+ */
+export function dmTargets(
+  lines: readonly { command?: string; params: readonly string[] }[],
+  ownNicks: readonly string[],
+): string[] {
+  const nicks: string[] = [];
+  for (const line of lines) {
+    if (line.command !== undefined && line.command.toUpperCase() !== "CHATHISTORY") continue;
+    const [sub, target] = line.params;
+    if (sub?.toUpperCase() !== "TARGETS" || !target || isChannelName(target)) continue;
+    if (ownNicks.some((n) => sameNick(n, target))) continue;
+    if (!nicks.some((n) => sameNick(n, target))) nicks.push(target);
+  }
+  return nicks;
 }

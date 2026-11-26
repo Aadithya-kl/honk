@@ -22,7 +22,15 @@ import {
 import type { MentionEvent } from "../notify.ts";
 import { SLASH_COMMANDS } from "./commands.ts";
 import { DELIVERY_TIMEOUT_MS, DeliveryTracker, type SentLine } from "./delivery.ts";
-import { isMissedLine, isMissedMention, type MissedWindow } from "./missed.ts";
+import {
+  dmTargets,
+  historyTimestamp,
+  isMissedLine,
+  isMissedMention,
+  MISSED_MARGIN_MS,
+  type MissedWindow,
+  TARGETS_BATCH_TYPES,
+} from "./missed.ts";
 import { NetworkWatcher } from "./netwatch.ts";
 import {
   DEMO_AMBIENT,
@@ -185,7 +193,7 @@ function safeDisconnect(client: Client): void {
 
 function requestHistory(
   client: Client,
-  subcommand: "LATEST" | "BEFORE",
+  subcommand: "LATEST" | "BEFORE" | "AFTER",
   target: string,
   anchor: string,
   limit: number,
@@ -877,6 +885,34 @@ export class IrcManager {
           }
         }
       }
+
+      // Ask who sent you DMs while the connection was down. Channel history comes with
+      // the rejoin; DMs have no rejoin. The reply is handled in the batch_end below.
+      if (ctrl.missed && client.state.caps.enabled.has("draft/chathistory")) {
+        void client.send(
+          "CHATHISTORY" as never,
+          "TARGETS" as never,
+          historyTimestamp(ctrl.missed.since - MISSED_MARGIN_MS) as never,
+          historyTimestamp(Date.now()) as never,
+          "50" as never,
+        );
+      }
+    });
+
+    // The nicks that wrote to you while the connection was down. Load each DM from that
+    // time; the missed-line checks in pushMessage then badge and notify it. See missed.ts.
+    client.on("batch_end", (batch) => {
+      if (!TARGETS_BATCH_TYPES.has(batch.params.type)) return;
+      const server = live();
+      const ctrl = this.controls.get(serverId);
+      if (!server || !ctrl?.missed) return;
+      const nicks = dmTargets(batch.params.messages, [ctrl.missed.nick, server.nick]);
+      if (nicks.length === 0) return;
+      const buffers = new Set(ctrl.missed.buffers);
+      for (const nick of nicks) buffers.add(this.bufferKey(serverId, nick));
+      ctrl.missed = { ...ctrl.missed, buffers };
+      const since = historyTimestamp(ctrl.missed.since - MISSED_MARGIN_MS);
+      for (const nick of nicks) requestHistory(client, "AFTER", nick, since, 50);
     });
 
     client.on("isupport:network", (msg) => {

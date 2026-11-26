@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatMessage } from "../types.ts";
-import { isMissedLine, isMissedMention, MISSED_MARGIN_MS, type MissedWindow } from "./missed.ts";
+import {
+  dmTargets,
+  historyTimestamp,
+  isMissedLine,
+  isMissedMention,
+  MISSED_MARGIN_MS,
+  type MissedWindow,
+} from "./missed.ts";
 
 const SINCE = Date.parse("2026-11-26T22:00:00Z");
 
@@ -72,5 +79,54 @@ describe("isMissedMention", () => {
   test("every DM line is a mention", () => {
     const msg = line({ text: "anyone around?" });
     expect(isMissedMention(window, "dm", msg, "goose", mentions)).toBe(true);
+  });
+});
+
+describe("historyTimestamp", () => {
+  test("formats a CHATHISTORY timestamp parameter", () => {
+    expect(historyTimestamp(SINCE)).toBe("timestamp=2026-11-26T22:00:00.000Z");
+  });
+});
+
+describe("dmTargets", () => {
+  // The shape irc-client-ts gives: CHATHISTORY is not in its command table.
+  const target = (name: string) => ({
+    command: undefined,
+    params: ["TARGETS", name, "timestamp=2026-11-26T22:02:00.000Z"],
+  });
+
+  test("lists the nicks and leaves out channels", () => {
+    expect(dmTargets([target("alice"), target("#honk"), target("bob")], ["goose"])).toEqual([
+      "alice",
+      "bob",
+    ]);
+  });
+
+  test("leaves out your own nicks, old and new", () => {
+    expect(dmTargets([target("Goose"), target("goose_"), target("alice")], ["goose", "goose_"])).toEqual([
+      "alice",
+    ]);
+  });
+
+  test("also reads lines from a parser that names the command", () => {
+    const line = { command: "CHATHISTORY", params: ["TARGETS", "alice", "timestamp=x"] };
+    expect(dmTargets([line], ["goose"])).toEqual(["alice"]);
+  });
+
+  test("lists a nick once", () => {
+    expect(dmTargets([target("alice"), target("Alice")], ["goose"])).toEqual(["alice"]);
+  });
+
+  test("ignores other lines", () => {
+    expect(
+      dmTargets(
+        [
+          { command: "privmsg", params: ["goose", "hi"] },
+          { command: undefined, params: ["LATEST", "alice"] },
+          { command: undefined, params: ["TARGETS"] },
+        ],
+        ["goose"],
+      ),
+    ).toEqual([]);
   });
 });
