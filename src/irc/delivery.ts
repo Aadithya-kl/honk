@@ -1,0 +1,108 @@
+/**
+ * Confirms that lines you send reach the server.
+ *
+ * A server handles a client's commands in the order they arrive. So after each line
+ * honk sends `PING :honk-<n>`, and when `PONG :honk-<n>` comes back, every line sent
+ * before that PING has arrived:
+ *
+ *   honk -> server:  PRIVMSG #honk :brb
+ *   honk -> server:  PING :honk-7
+ *   server -> honk:  PONG irc.example.net :honk-7   <- "brb" arrived
+ *
+ * If the PONG doesn't come back in DELIVERY_TIMEOUT_MS, the connection is dead (Wi-Fi
+ * off, a dropped route) and the lines are reported as not sent. This works on every
+ * server, with or without IRCv3 echo-message.
+ */
+
+/** How long to wait for the PONG. Long enough for a slow link, short enough to notice a dead one. */
+export const DELIVERY_TIMEOUT_MS = 15_000;
+
+/** One line the user sent, as shown in a buffer. */
+export interface SentLine {
+  bufferName: string;
+  messageId: string;
+}
+
+export interface DeliveryCallbacks {
+  /** These lines reached the server. */
+  delivered(serverId: string, lines: SentLine[]): void;
+  /** No PONG in time: these lines may not have arrived, and the connection looks dead. */
+  timedOut(serverId: string, lines: SentLine[]): void;
+}
+
+export interface Timers {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const systemTimers: Timers = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+const TOKEN_PREFIX = "honk-";
+
+interface Probe {
+  seq: number;
+  line: SentLine;
+  timer: unknown;
+}
+
+export class DeliveryTracker {
+  private nextSeq = 1;
+  /** Per server, the probes still waiting for a PONG, oldest first. */
+  private pending = new Map<string, Probe[]>();
+
+  constructor(
+    private readonly callbacks: DeliveryCallbacks,
+    private readonly timers: Timers = systemTimers,
+  ) {}
+
+  /**
+   * Call right after sending `line`. Sends the PING through `sendPing` and starts the
+   * timer.
+   */
+  track(serverId: string, line: SentLine, sendPing: (token: string) => void): void {
+    const seq = this.nextSeq++;
+    const timer = this.timers.setTimeout(() => this.timeout(serverId), DELIVERY_TIMEOUT_MS);
+    const probes = this.pending.get(serverId) ?? [];
+    probes.push({ seq, line, timer });
+    this.pending.set(serverId, probes);
+    sendPing(`${TOKEN_PREFIX}${seq}`);
+  }
+
+  /** Call for each PONG. A PONG that isn't ours (the library's keepalive) is ignored. */
+  pong(serverId: string, token: string | undefined): void {
+    if (!token?.startsWith(TOKEN_PREFIX)) return;
+    const seq = Number(token.slice(TOKEN_PREFIX.length));
+    const probes = this.pending.get(serverId);
+    if (!probes || !Number.isInteger(seq)) return;
+    // The server answers in order, so this PONG also confirms every earlier probe.
+    const done = probes.filter((p) => p.seq <= seq);
+    if (done.length === 0) return;
+    for (const p of done) this.timers.clearTimeout(p.timer);
+    this.setPending(serverId, probes.filter((p) => p.seq > seq));
+    this.callbacks.delivered(serverId, done.map((p) => p.line));
+  }
+
+  /**
+   * Forgets every line still waiting on `serverId` and returns them. Call when the
+   * connection closes: those lines may not have arrived.
+   */
+  drop(serverId: string): SentLine[] {
+    const probes = this.pending.get(serverId) ?? [];
+    for (const p of probes) this.timers.clearTimeout(p.timer);
+    this.pending.delete(serverId);
+    return probes.map((p) => p.line);
+  }
+
+  private timeout(serverId: string): void {
+    const lines = this.drop(serverId);
+    if (lines.length > 0) this.callbacks.timedOut(serverId, lines);
+  }
+
+  private setPending(serverId: string, probes: Probe[]): void {
+    if (probes.length > 0) this.pending.set(serverId, probes);
+    else this.pending.delete(serverId);
+  }
+}

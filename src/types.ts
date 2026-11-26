@@ -49,6 +49,11 @@ export interface ChatMessage {
   isMention?: boolean;
   isSelf?: boolean;
   isHistory?: boolean;
+  /**
+   * For a line you sent: "pending" until the server confirms it, "failed" if the
+   * connection died first. Unset once confirmed. See src/irc/delivery.ts.
+   */
+  delivery?: "pending" | "failed";
 }
 
 export interface NickEntry {

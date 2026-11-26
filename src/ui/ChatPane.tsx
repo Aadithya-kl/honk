@@ -82,6 +82,8 @@ const MessageRow = memo(function MessageRow({
   const mention = highlightMentions && Boolean(msg.isMention);
   const sender = msg.from ?? "";
   const senderColor = msg.isSelf ? theme.accent : nickColor(sender);
+  // A line you sent that the server hasn't confirmed yet (or never will) is dimmed.
+  const unconfirmed = msg.delivery !== undefined;
   let label: ReactNode;
   let labelFg: string;
   let body: ReactNode;
@@ -95,7 +97,7 @@ const MessageRow = memo(function MessageRow({
       body = (
         <FormattedText
           text={msg.text}
-          defaultFg={mention ? theme.fgBright : theme.fgPrimary}
+          defaultFg={unconfirmed ? theme.fgMuted : mention ? theme.fgBright : theme.fgPrimary}
         />
       );
       break;
@@ -108,7 +110,11 @@ const MessageRow = memo(function MessageRow({
           <span fg={senderColor}>
             <em>{sender} </em>
           </span>
-          <FormattedText text={msg.text} defaultFg={theme.accentAlt} forceItalic />
+          <FormattedText
+            text={msg.text}
+            defaultFg={unconfirmed ? theme.fgMuted : theme.accentAlt}
+            forceItalic
+          />
         </>
       );
       break;
@@ -134,6 +140,15 @@ const MessageRow = memo(function MessageRow({
           <span fg={theme.fgMuted}>{msg.text}</span>
         );
     }
+  }
+
+  if (msg.delivery === "failed") {
+    body = (
+      <>
+        {body}
+        <span fg={theme.red}> (not sent)</span>
+      </>
+    );
   }
 
   // Two columns, so a long body wraps inside its own column and the gutter line

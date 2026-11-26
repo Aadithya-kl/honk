@@ -21,6 +21,7 @@ import {
 } from "./names.ts";
 import type { MentionEvent } from "../notify.ts";
 import { SLASH_COMMANDS } from "./commands.ts";
+import { DELIVERY_TIMEOUT_MS, DeliveryTracker, type SentLine } from "./delivery.ts";
 import {
   DEMO_AMBIENT,
   DEMO_HISTORY,
@@ -276,6 +277,11 @@ export class IrcManager {
   private active: ActiveBuffer | null = null;
   private listeners = new Set<() => void>();
   private mentionListeners = new Set<(event: MentionEvent) => void>();
+  /** Confirms that the lines you send reach the server. See delivery.ts. */
+  private delivery = new DeliveryTracker({
+    delivered: (serverId, lines) => this.setDelivery(serverId, lines, undefined),
+    timedOut: (serverId, lines) => this.deliveryTimedOut(serverId, lines),
+  });
   private snapshot: StoreSnapshot = { servers: [], active: null, update: null };
   private update: UpdateNotice | null = null;
   private wakeInterval: ReturnType<typeof setInterval> | null = null;
@@ -522,6 +528,7 @@ export class IrcManager {
     }
 
     // Tear down any previous client cleanly before replacing
+    this.failPendingLines(serverId);
     const prev = this.clients.get(serverId);
     this.clients.delete(serverId);
     if (prev) safeDisconnect(prev);
@@ -647,6 +654,7 @@ export class IrcManager {
 
     const client = this.clients.get(serverId);
     this.clients.delete(serverId);
+    this.failPendingLines(serverId);
     const server = this.servers.get(serverId);
     if (client) {
       try {
@@ -748,6 +756,12 @@ export class IrcManager {
       }
     });
 
+    // The PONG for a PING sent after your line: the line reached the server.
+    client.on("pong", (msg) => {
+      if (isStale()) return;
+      this.delivery.pong(serverId, msg.params.key ?? msg.params.daemon);
+    });
+
     client.on("connected", () => {
       if (isStale()) return;
       this.pushMessage(
@@ -814,6 +828,7 @@ export class IrcManager {
 
       ctrl.registered = false;
       this.forgetRequestedJoins(serverId);
+      this.failPendingLines(serverId);
       if (ctrl.stableTimer) {
         clearTimeout(ctrl.stableTimer);
         ctrl.stableTimer = null;
@@ -1179,6 +1194,70 @@ export class IrcManager {
    * Tells every open channel and DM that the connection is gone, and empties the user
    * lists, which are stale until the server re-joins (and sends NAMES again).
    */
+  /**
+   * Shows a line you just sent as "sending" and starts confirming it with a PING.
+   * See delivery.ts.
+   */
+  private pushSent(serverId: string, client: Client, target: string, message: ChatMessage): void {
+    message.isSelf = true;
+    message.delivery = "pending";
+    this.pushMessage(serverId, target, message);
+    const line: SentLine = { bufferName: this.bufferKey(serverId, target), messageId: message.id };
+    this.delivery.track(serverId, line, (token) => void client.send("PING", token));
+  }
+
+  /** Sets the delivery state of sent lines. `undefined` means the server has them. */
+  private setDelivery(
+    serverId: string,
+    lines: SentLine[],
+    state: ChatMessage["delivery"],
+  ): void {
+    const server = this.servers.get(serverId);
+    if (!server || lines.length === 0) return;
+    const idsByBuffer = new Map<string, Set<string>>();
+    for (const l of lines) {
+      const ids = idsByBuffer.get(l.bufferName) ?? new Set<string>();
+      ids.add(l.messageId);
+      idsByBuffer.set(l.bufferName, ids);
+    }
+    for (const [name, ids] of idsByBuffer) {
+      const buf = server.buffers[name];
+      if (!buf) continue;
+      const messages = buf.messages.map((m) => {
+        if (!ids.has(m.id)) return m;
+        const { delivery: _, ...rest } = m;
+        return state ? { ...rest, delivery: state } : rest;
+      });
+      server.buffers = { ...server.buffers, [name]: { ...buf, messages } };
+    }
+    this.emit();
+  }
+
+  /** Lines still waiting for their PONG when the connection closes may not have arrived. */
+  private failPendingLines(serverId: string): void {
+    this.setDelivery(serverId, this.delivery.drop(serverId), "failed");
+  }
+
+  /** No PONG in time: the connection is dead even though the socket looks open. */
+  private deliveryTimedOut(serverId: string, lines: SentLine[]): void {
+    this.setDelivery(serverId, lines, "failed");
+    const client = this.clients.get(serverId);
+    const server = this.servers.get(serverId);
+    if (!client || server?.status !== "connected") return;
+    this.pushMessage(
+      serverId,
+      STATUS_BUFFER,
+      makeMessage(
+        "error",
+        `No reply from the server in ${DELIVERY_TIMEOUT_MS / 1000}s. The connection looks dead.`,
+      ),
+    );
+    // The "disconnected" handler notes the loss and schedules the reconnect. Schedule it
+    // here too, in case a dead socket never reports "disconnected".
+    safeDisconnect(client);
+    this.scheduleReconnect(serverId);
+  }
+
   private noteOffline(serverId: string, text: string): void {
     const server = this.servers.get(serverId);
     if (!server) return;
@@ -1822,11 +1901,7 @@ export class IrcManager {
 
     client.privmsg(buffer, raw);
     this.clearUnreadDivider(serverId, buffer);
-    this.pushMessage(
-      serverId,
-      buffer,
-      makeMessage("message", raw, { from: server.nick, isSelf: true }),
-    );
+    this.pushSent(serverId, client, buffer, makeMessage("message", raw, { from: server.nick }));
     return true;
   }
 
@@ -1964,6 +2039,10 @@ export class IrcManager {
       case "msg":
       case "query": {
         if (!client || !server) return reply("Not connected.", "error");
+        // Before registration the server would not answer the delivery PING.
+        if (server.status !== "connected" && args.length > 1) {
+          return reply("Not connected yet. Wait a moment and try again.", "error");
+        }
         const target = args[0];
         const text = args.slice(1).join(" ");
         if (!target)
@@ -1972,11 +2051,7 @@ export class IrcManager {
         this.setActive(server.id, target);
         if (text) {
           client.privmsg(target, text);
-          this.pushMessage(
-            server.id,
-            target,
-            makeMessage("message", text, { from: server.nick, isSelf: true }),
-          );
+          this.pushSent(server.id, client, target, makeMessage("message", text, { from: server.nick }));
         }
         return;
       }
@@ -1986,12 +2061,11 @@ export class IrcManager {
         if (!rest || activeBuffer === STATUS_BUFFER) {
           return reply("Usage: /me <action> (inside a channel or DM)", "error");
         }
+        if (server.status !== "connected") {
+          return reply("Not connected yet. Wait a moment and try again.", "error");
+        }
         client.action(activeBuffer, rest);
-        this.pushMessage(
-          server.id,
-          activeBuffer,
-          makeMessage("action", rest, { from: server.nick, isSelf: true }),
-        );
+        this.pushSent(server.id, client, activeBuffer, makeMessage("action", rest, { from: server.nick }));
         return;
       }
 
