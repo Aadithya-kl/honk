@@ -138,8 +138,9 @@ sh scripts/test-linux.sh alpine:3.20   # one image
 
 ## Releasing
 
-Push a tag. The release workflow builds the binaries and attaches them to a
-GitHub release.
+Push a tag. The release workflow builds the binaries, runs
+`scripts/test-linux.sh` on an x64 and an arm64 runner, and only if every
+distro passes, signs the binaries and attaches them to a GitHub release.
 
 ```sh
 git tag v0.1.0

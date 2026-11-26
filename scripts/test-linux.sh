@@ -4,8 +4,10 @@
 #
 #   sh scripts/test-linux.sh                  # every distro and CPU
 #   sh scripts/test-linux.sh alpine:3.20      # only these images
+#   HONK_TEST_PLATFORMS=linux/arm64 sh scripts/test-linux.sh   # one CPU
 #
-# On an Apple Silicon Mac, Docker runs the x64 images through emulation.
+# On an Apple Silicon Mac, Docker runs the x64 images through emulation. The
+# release workflow runs each CPU on its own runner instead.
 
 set -eu
 cd "$(dirname "$0")/.."
@@ -24,10 +26,12 @@ else
 	images="alpine:3.20 debian:12-slim ubuntu:24.04 fedora:41 archlinux:latest"
 fi
 
+platforms="${HONK_TEST_PLATFORMS:-linux/amd64 linux/arm64}"
+
 log=$(mktemp -d)
 failed=0
 for image in $images; do
-	for platform in linux/amd64 linux/arm64; do
+	for platform in $platforms; do
 		# Arch Linux publishes images for x64 only.
 		case "$image" in archlinux*) [ "$platform" = linux/amd64 ] || continue ;; esac
 
@@ -45,6 +49,9 @@ for image in $images; do
 			printf 'PASS  %s\n' "$name"
 		else
 			printf 'FAIL  %s  (log: %s)\n' "$name" "$file"
+			# The end of the log, without terminal escape codes, so a failure
+			# can be read in CI output too.
+			sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$file" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -n 30 | sed 's/^/      /'
 			failed=1
 		fi
 	done
