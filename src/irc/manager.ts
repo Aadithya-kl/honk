@@ -872,16 +872,23 @@ export class IrcManager {
       const server = live();
       if (!server) return;
       const { channel, nick, comment } = msg.params;
-      const by = msg.source?.name ?? "someone";
+      const by = normalizeNick(msg.source?.name) || "someone";
       const reason = comment ? ` (${comment})` : "";
+      if (sameNick(nick, server.nick)) {
+        // The channel's buffer goes away, so say why in *status, where the view lands.
+        this.removeBuffer(serverId, channel);
+        this.pushMessage(
+          serverId,
+          STATUS_BUFFER,
+          makeMessage("error", `You were kicked from ${channel} by ${by}${reason}`),
+        );
+        return;
+      }
       this.pushMessage(
         serverId,
         channel,
         makeMessage("error", `${nick} was kicked by ${by}${reason}`),
       );
-      if (sameNick(nick, server.nick)) {
-        this.removeBuffer(serverId, channel);
-      }
     });
 
     client.on("nick", (msg) => {
@@ -902,9 +909,14 @@ export class IrcManager {
       for (const bufName of priorChannels.get(msg) ?? channelsWithNick(server, oldNick)) {
         this.pushMessage(serverId, bufName, makeMessage("system", line));
       }
-      // An open DM follows the person to the new nick.
+      // An open DM follows the person to the new nick. If a DM with the new nick is
+      // already open, the old one is merged into it, so one person has one DM.
       if (this.hasBuffer(serverId, oldNick)) {
-        this.renameBuffer(serverId, oldNick, newNick);
+        if (this.hasBuffer(serverId, newNick) && !sameNick(oldNick, newNick)) {
+          this.mergeBuffer(serverId, oldNick, newNick);
+        } else {
+          this.renameBuffer(serverId, oldNick, newNick);
+        }
         this.pushMessage(serverId, newNick, makeMessage("system", line));
       }
     });
@@ -1166,6 +1178,8 @@ export class IrcManager {
     const key = this.bufferKey(serverId, from);
     const buf = server?.buffers[key];
     if (!server || !buf || key === to) return;
+    // "*Status" from a bouncer matches "*status" ignoring case; the status buffer keeps its name.
+    if (key === STATUS_BUFFER || sameNick(to, STATUS_BUFFER)) return;
     const toKey = this.bufferKey(serverId, to);
     if (toKey !== key && server.buffers[toKey]) return;
 
@@ -1177,6 +1191,47 @@ export class IrcManager {
     );
     if (this.active?.serverId === serverId && this.active.buffer === key) {
       this.active = { serverId, buffer: to };
+    }
+    this.emit();
+  }
+
+  /** Moves the lines of DM `from` into DM `into` (in time order) and removes `from`. */
+  private mergeBuffer(serverId: string, from: string, into: string): void {
+    const server = this.servers.get(serverId);
+    const fromKey = this.bufferKey(serverId, from);
+    const intoKey = this.bufferKey(serverId, into);
+    const src = server?.buffers[fromKey];
+    const dst = server?.buffers[intoKey];
+    if (!server || !src || !dst || fromKey === intoKey) return;
+    if (fromKey === STATUS_BUFFER || intoKey === STATUS_BUFFER) return;
+
+    const limit = Math.max(
+      src.messageLimit ?? MAX_MESSAGES,
+      dst.messageLimit ?? MAX_MESSAGES,
+    );
+    // Array.prototype.sort is stable, so lines with the same time keep their order.
+    const messages = [...src.messages, ...dst.messages].sort(
+      (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
+    );
+    if (messages.length > limit) messages.splice(0, messages.length - limit);
+    const unreadIds = new Set([src.firstUnreadId, dst.firstUnreadId]);
+    const firstUnreadId = messages.find((m) => unreadIds.has(m.id))?.id;
+
+    const { [fromKey]: _, ...rest } = server.buffers;
+    server.buffers = {
+      ...rest,
+      [intoKey]: {
+        ...dst,
+        messages,
+        messageLimit: limit,
+        unread: src.unread + dst.unread,
+        hasMention: src.hasMention || dst.hasMention,
+        firstUnreadId,
+      },
+    };
+    server.bufferOrder = server.bufferOrder.filter((b) => b !== fromKey);
+    if (this.active?.serverId === serverId && this.active.buffer === fromKey) {
+      this.active = { serverId, buffer: intoKey };
     }
     this.emit();
   }
