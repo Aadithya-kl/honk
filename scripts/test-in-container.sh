@@ -8,7 +8,8 @@
 # 3. Checks that install.sh picked the right binary for this CPU and libc.
 # 4. Runs `honk --demo` for a few seconds. The caller checks the screen output.
 #
-# Mounted: /install.sh (site/install.sh) and /rel (dist/, with SHA256SUMS).
+# Mounted: /install.sh (site/install.sh) and /rel (dist/: the .gz files and
+# SHA256SUMS).
 
 set -eu
 
@@ -83,7 +84,7 @@ aarch64) want=honk-linux-arm64 ;;
 *) want="unknown-$(uname -m)" ;;
 esac
 [ "$ID" = alpine ] && want="$want-musl"
-want_sum=$(awk -v f="$want" '$2 == f { print $1 }' /rel/SHA256SUMS)
+want_sum=$(gzip -dc "/rel/$want.gz" | sha256sum | cut -d ' ' -f 1)
 got_sum=$(sha256sum /root/.local/bin/honk | cut -d ' ' -f 1)
 if [ "$got_sum" != "$want_sum" ]; then
 	echo "FAIL: installed binary is not $want"

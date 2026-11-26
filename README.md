@@ -29,8 +29,9 @@ curl -fsSL https://agustingianni.github.io/honk/install.sh | HONK_VERSION=v0.1.0
 
 ### Install by hand
 
-Download `honk-<os>-<cpu>` from the
-[latest release](https://github.com/agustingianni/honk/releases/latest).
+Download `honk-<os>-<cpu>.gz` from the
+[latest release](https://github.com/agustingianni/honk/releases/latest) and
+unpack it.
 Use `curl` rather than a browser: on macOS, a file downloaded in a browser is
 quarantined, and Gatekeeper blocks it because the binary is not signed.
 
@@ -40,8 +41,8 @@ quarantined, and Gatekeeper blocks it because the binary is not signed.
 PLATFORM=darwin-arm64
 
 mkdir -p ~/.local/bin
-curl -fL -o ~/.local/bin/honk \
-  "https://github.com/agustingianni/honk/releases/latest/download/honk-$PLATFORM"
+curl -fL "https://github.com/agustingianni/honk/releases/latest/download/honk-$PLATFORM.gz" \
+  | gunzip > ~/.local/bin/honk
 chmod +x ~/.local/bin/honk
 ```
 
@@ -53,7 +54,8 @@ xattr -d com.apple.quarantine ~/.local/bin/honk
 
 ### Check a download
 
-Each release has a `SHA256SUMS` file. Each binary is also signed with a build
+Each release has a `SHA256SUMS` file with the checksum of each `.gz` file.
+Both the `.gz` files and the binaries inside them are signed with a build
 provenance attestation. To check that your binary was built by this repo's
 release workflow from a tagged commit:
 

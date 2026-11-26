@@ -12,13 +12,13 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-[ -f dist/honk-linux-x64 ] || {
+[ -f dist/honk-linux-x64.gz ] || {
 	echo "dist/ is empty. Run: bun run release" >&2
 	exit 1
 }
 
 # Same as the release workflow: install.sh checks downloads against this file.
-(cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum honk-*; else shasum -a 256 honk-*; fi) >dist/SHA256SUMS
+(cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum honk-*.gz; else shasum -a 256 honk-*.gz; fi) >dist/SHA256SUMS
 
 if [ $# -gt 0 ]; then
 	images="$*"

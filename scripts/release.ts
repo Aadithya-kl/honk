@@ -45,6 +45,10 @@ for (const target of targets) {
     --define __HONK_TARGET__=${JSON.stringify(target)} \
     ${libc} \
     --outfile dist/honk-${target}`;
+  // Releases ship the gzipped file: about a third of the size. -n leaves out the
+  // name and time, so the same binary always gives the same .gz. -k keeps the
+  // binary, for local testing.
+  await $`gzip -9 -n -k dist/honk-${target}`;
 }
 
 await $`ls -lh dist`;

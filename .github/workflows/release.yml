@@ -24,16 +24,17 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.10
-          no-cache: true # a release must not read a cache that another run wrote
+          no-cache: true # do not reuse a cached Bun download in a release
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run release
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binaries
-          path: dist/honk-*
+          path: dist/honk-*.gz
           if-no-files-found: error
           retention-days: 1
+          compression-level: 0 # already gzipped
 
   # Installs and runs the Linux binaries in Docker on several distros, each CPU
   # on its own runner. A release is only published if every combination passes.
@@ -79,11 +80,14 @@ jobs:
         with:
           name: binaries
           path: dist
+      # Unpack a copy of each binary, so the attestation covers both the .gz
+      # files and the installed binaries (gh attestation verify ~/.local/bin/honk).
+      - run: gzip -dk dist/honk-*.gz
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/honk-*
       # install.sh checks each download against this file.
-      - run: cd dist && sha256sum honk-* > SHA256SUMS
-      - run: gh release create "$GITHUB_REF_NAME" dist/honk-* dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+      - run: cd dist && sha256sum honk-*.gz > SHA256SUMS
+      - run: gh release create "$GITHUB_REF_NAME" dist/honk-*.gz dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

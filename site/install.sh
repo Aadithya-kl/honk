@@ -12,7 +12,8 @@
 #
 # What it does:
 #   1. Finds your OS and CPU, and picks the matching binary from the GitHub release.
-#   2. Downloads the binary and SHA256SUMS, and checks the binary's checksum.
+#   2. Downloads the gzipped binary and SHA256SUMS, checks the checksum, and
+#      unpacks the binary.
 #   3. If the GitHub CLI (gh) is installed and logged in, also checks the build
 #      provenance attestation: proof that GitHub Actions built the binary from
 #      this repo.
@@ -154,7 +155,8 @@ main() {
 	case "$target" in
 	*-musl) check_musl_libs ;;
 	esac
-	asset="honk-$target"
+	binary="honk-$target"
+	asset="$binary.gz"
 	install_dir="${HONK_INSTALL_DIR:-$HOME/.local/bin}"
 
 	if [ -n "${HONK_VERSION:-}" ]; then
@@ -164,6 +166,8 @@ main() {
 		base_url="https://github.com/$REPO/releases/latest/download"
 		version_label="the latest release"
 	fi
+
+	command -v gzip >/dev/null 2>&1 || fail "this installer needs gzip to unpack the download"
 
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -179,20 +183,23 @@ main() {
 		fail "checksum mismatch for $asset (expected $expected, got $actual)"
 	fi
 	say "checksum OK"
+	gzip -dc "$tmp/$asset" >"$tmp/$binary"
 
+	# The attestation covers the unpacked binary too, so `gh attestation verify`
+	# also works later on the installed file.
 	if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-		if gh attestation verify "$tmp/$asset" --repo "$REPO" >/dev/null 2>&1; then
+		if gh attestation verify "$tmp/$binary" --repo "$REPO" >/dev/null 2>&1; then
 			say "attestation OK (built by GitHub Actions from $REPO)"
 		else
-			fail "attestation check failed for $asset. Do not run this file."
+			fail "attestation check failed for $binary. Do not run this file."
 		fi
 	fi
 
 	mkdir -p "$install_dir"
-	chmod 755 "$tmp/$asset"
+	chmod 755 "$tmp/$binary"
 	# Copy next to the target first, then rename, so the swap is atomic and a
 	# running honk is not overwritten in place.
-	cp "$tmp/$asset" "$install_dir/.honk.new"
+	cp "$tmp/$binary" "$install_dir/.honk.new"
 	mv -f "$install_dir/.honk.new" "$install_dir/honk"
 	say "installed $install_dir/honk"
 
