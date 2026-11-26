@@ -7,8 +7,24 @@ export function defaultNick(): string {
   return process.env.USER || "guest";
 }
 
+/** Id for a server added by host alone (/connect, --server): the full host, so hosts never collide. */
 export function serverIdFromHost(host: string): string {
-  return host.split(".")[1] || host;
+  return host.toLowerCase();
+}
+
+export function sameHost(a: string | undefined, b: string | undefined): boolean {
+  return a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Parses a port argument. "+6697" means TLS (the HexChat style); otherwise only 6697 is TLS.
+ * Returns undefined if `arg` isn't a port.
+ */
+export function parsePortArg(arg: string | undefined): { port: number; tls: boolean } | undefined {
+  const m = arg ? /^(\+)?(\d+)$/.exec(arg) : null;
+  if (!m) return undefined;
+  const port = Number(m[2]);
+  return { port, tls: Boolean(m[1]) || port === 6697 };
 }
 
 function parseArgs(argv: string[]) {
@@ -121,8 +137,26 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
       autoConnect: true,
     };
 
+    // A configured server with the same host keeps its id and settings (SASL, channels,
+    // username...); the CLI flags only override what they set.
+    const portGiven = Boolean(portPart) || typeof flags.port === "string";
+    const existing = config.servers.find(
+      (s) => sameHost(s.host, host) && (!portGiven || s.port === port),
+    );
+    const merged: ServerConfig = existing
+      ? {
+          ...existing,
+          ...(portGiven ? { port } : {}),
+          ...(flags.tls !== undefined ? { tls } : {}),
+          ...(typeof flags.nick === "string" ? { nick } : {}),
+          ...(password ? { password, authMethod } : {}),
+          channels: [...new Set([...(existing.channels ?? []), ...channels])],
+          autoConnect: true,
+        }
+      : cliServer;
+
     config = {
-      servers: [cliServer, ...config.servers.filter((s) => s.id !== cliServer.id)],
+      servers: [merged, ...config.servers.filter((s) => s !== existing)],
     };
   }
 

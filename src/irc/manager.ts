@@ -1,5 +1,5 @@
 import { Client } from "irc-client-ts";
-import { defaultNick, serverIdFromHost } from "../config.ts";
+import { defaultNick, parsePortArg, sameHost, serverIdFromHost } from "../config.ts";
 import type {
   ActiveBuffer,
   BufferKind,
@@ -1178,7 +1178,7 @@ export class IrcManager {
     switch (cmd) {
       case "help": {
         reply(
-          "Commands: /connect <host> [port] [nick] | /disconnect | /join #chan | /part [msg] | /msg <nick> <text> | /me <action> | /nick <new> | /topic [text] | /whois <nick> | /clear | /quit",
+          "Commands: /connect <host> [port|+tlsport] [nick] | /disconnect | /join #chan | /part [msg] | /msg <nick> <text> | /me <action> | /nick <new> | /topic [text] | /whois <nick> | /clear | /quit",
         );
         return;
       }
@@ -1189,28 +1189,44 @@ export class IrcManager {
           if (server && server.config.host) {
             void this.connectServer(server.id, { manual: true });
           } else {
-            reply("Usage: /connect <host[:port]> [port] [nick]", "error");
+            reply("Usage: /connect <host> [port|+tlsport] [nick] (6697 is TLS)", "error");
           }
           return;
         }
-        const [host, inlinePort] = hostArg.split(":");
-        const port = inlinePort
-          ? Number(inlinePort)
-          : args[1] && /^\d+$/.test(args[1])
-            ? Number(args[1])
-            : 6697;
-        const nickArg =
-          inlinePort || !(args[1] && /^\d+$/.test(args[1])) ? args[1] : args[2];
-        const nick = nickArg || server?.nick || defaultNick();
-        const tls = port !== 6667;
-        const id = serverIdFromHost(host!);
+        const [host = "", inlinePort] = hostArg.split(":");
+        const portArg = inlinePort ?? (parsePortArg(args[1]) ? args[1] : undefined);
+        const parsedPort = parsePortArg(portArg);
+        if (portArg !== undefined && !parsedPort) {
+          return reply(`Invalid port: ${portArg}`, "error");
+        }
+        const nickArg = inlinePort || !parsedPort ? args[1] : args[2];
+
+        // Reconnect a known server rather than replace its config (SASL, channels...).
+        const known = this.serverOrder
+          .map((id) => this.servers.get(id))
+          .find(
+            (s) =>
+              s &&
+              sameHost(s.config.host, host) &&
+              (!parsedPort || s.config.port === parsedPort.port),
+          );
+        if (known) {
+          if (nickArg) known.config = { ...known.config, nick: nickArg };
+          this.setActive(known.id, STATUS_BUFFER);
+          void this.connectServer(known.id, { manual: true });
+          return;
+        }
+
+        const { port, tls } = parsedPort ?? { port: 6697, tls: true };
+        let id = serverIdFromHost(host);
+        if (this.servers.has(id)) id = `${id}:${port}`;
         this.addServer({
           id,
-          name: host!,
-          host: host!,
+          name: host,
+          host,
           port,
           tls,
-          nick,
+          nick: nickArg || server?.nick || defaultNick(),
           autoConnect: true,
         });
         this.setActive(id, STATUS_BUFFER);
