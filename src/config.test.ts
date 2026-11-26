@@ -91,4 +91,17 @@ describe("saveThemeSetting", () => {
       rmSync(dir, { recursive: true });
     }
   });
+
+  test("a --config file that does not exist yet is where the theme goes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "honk-config-"));
+    try {
+      const path = join(dir, "mine.json");
+      const config = loadConfig(["--config", path]);
+      expect(config.path).toBe(path);
+      saveThemeSetting(config.path!, "nord");
+      expect(loadConfig(["--config", path]).theme).toBe("nord");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
 });

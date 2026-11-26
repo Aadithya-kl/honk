@@ -102,7 +102,11 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
     candidates.push(defaultConfigPath());
   }
 
-  let config: AppConfig = { servers: [] };
+  // With --config, that file is the config file even before it exists.
+  let config: AppConfig = {
+    servers: [],
+    path: typeof flags.config === "string" ? candidates[0] : undefined,
+  };
 
   for (const candidate of candidates) {
     const loaded = readConfigFile(candidate);

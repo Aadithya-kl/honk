@@ -8,9 +8,12 @@
 // - base10/base11 (Base24 "darker backgrounds") are used only when they are
 //   close to base00. Otherwise honk makes its own shades of base00. The same
 //   goes for the selection background, base02.
+//   When the side panels would look the same as the chat (a pure black base00
+//   cannot get darker), they are made a little lighter instead.
 // - The gray text slots (base03, base04) and the bright text (base06, base07)
 //   are used only when they are readable and really gray.
-// The accent slots (base08 red, ..., base0E magenta) are used as they are.
+// - The accent slots (base08 red, ..., base0E magenta) keep their hue, but one
+//   below 3:1 on base00 is moved toward the bright text until it reaches 3:1.
 // There is no hue check: Gruvbox's yellow-green "green" or Rose Pine's teal
 // cannot be told apart from a mistake.
 
@@ -62,6 +65,12 @@ const HEX = /^#[0-9a-fA-F]{6}$/;
 
 /** WCAG level for normal text. A scheme whose base05 on base00 is below this is rejected. */
 export const MIN_TEXT_CONTRAST = 4.5;
+/** Accent colors are moved toward the bright text until they reach this. */
+export const MIN_ACCENT_CONTRAST = 3;
+/** Side panels closer than this to the chat background cannot be seen apart from it... */
+export const MIN_PANEL_CONTRAST = 1.03;
+/** ...so they are made lighter, until they reach this. */
+const RAISED_PANEL_CONTRAST = 1.05;
 
 /**
  * Checks a parsed scheme file. Returns the scheme, with all colors in lower
@@ -123,8 +132,20 @@ export function schemeToTheme(scheme: Scheme): Theme {
     color !== undefined && contrast(color, bg) <= 1.6 ? color : undefined;
   // The eye sees the same step in black as much bigger on a white background.
   const light = scheme.variant === "light";
-  const darker = nearBg(p.base10) ?? shade(light ? 0.03 : 0.15);
-  const darkest = nearBg(p.base11) ?? shade(light ? 0.06 : 0.25);
+  let darker = nearBg(p.base10) ?? shade(light ? 0.03 : 0.15);
+  let darkest = nearBg(p.base11) ?? shade(light ? 0.06 : 0.25);
+  let input = mix(bg, fg, 0.06);
+  // Too close to the chat to see (Tokyo Night's panels are 1.07:1): step
+  // toward the text color instead, so the panels stand out, lighter in a dark
+  // theme. The footer gets the same color, so it does not blend with the
+  // input bar above it, which is lighter still.
+  if (contrast(darker, bg) < MIN_PANEL_CONTRAST) {
+    darker = stepUntil(bg, fg, bg, RAISED_PANEL_CONTRAST);
+    darkest = darker;
+    // The input bar sits right above the footer: keep it a visible step
+    // lighter (Tokyo Night's input bar is 1.12:1 on the chat).
+    input = stepUntil(bg, fg, bg, 1.12);
+  }
   // The selection background, softened when it is far from base00 (solarized
   // puts a strong gray there).
   const selection = nearBg(p.base02) ?? mix(bg, p.base02!, 0.4);
@@ -146,6 +167,10 @@ export function schemeToTheme(scheme: Scheme): Theme {
     fg,
   );
 
+  // Accents are used as text (channel names, notices, links), so they must
+  // be readable.
+  const readable = (color: string) => stepUntil(color, fgBright, bg, MIN_ACCENT_CONTRAST);
+
   const accents = [
     p.base08, p.base09, p.base0A, p.base0B, p.base0C, p.base0D, p.base0E,
     p.base12, p.base13, p.base14, p.base15, p.base16, p.base17,
@@ -160,7 +185,7 @@ export function schemeToTheme(scheme: Scheme): Theme {
     bgNicklist: darker,
     bgHeader: darker,
     bgFooter: darkest,
-    bgInput: mix(bg, fg, 0.06),
+    bgInput: input,
     bgActiveRow: selection,
     bgMention: mix(bg, p.base08!, 0.15),
     bgOverlay: mix(bg, fg, 0.05),
@@ -174,16 +199,19 @@ export function schemeToTheme(scheme: Scheme): Theme {
     fgMuted,
     fgDim: mix(fgMuted, bg, 0.35),
 
-    accent: p.base0D!,
-    accentAlt: p.base0E!,
-    green: p.base0B!,
-    yellow: p.base0A!,
-    red: p.base08!,
-    cyan: p.base0C!,
-    orange: p.base09!,
+    accent: readable(p.base0D!),
+    accentAlt: readable(p.base0E!),
+    green: readable(p.base0B!),
+    yellow: readable(p.base0A!),
+    red: readable(p.base08!),
+    cyan: readable(p.base0C!),
+    orange: readable(p.base09!),
 
     // A theme with few readable accents still needs some nick colors.
-    nickPalette: nickPalette.length >= 4 ? nickPalette : [p.base08!, p.base0B!, p.base0D!, p.base0E!],
+    nickPalette:
+      nickPalette.length >= 4
+        ? nickPalette
+        : [...new Set([p.base08!, p.base0B!, p.base0D!, p.base0E!].map(readable))],
   };
 }
 
@@ -212,6 +240,19 @@ function luminance(hex: string): number {
     return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
   }) as [number, number, number];
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * Mixes `from` toward `to` in small steps, and returns the first color whose
+ * contrast with `bg` is at least `target`. Returns `from` if it is already
+ * there, and `to` if no step reaches it.
+ */
+export function stepUntil(from: string, to: string, bg: string, target: number): string {
+  for (let i = 0; i <= 100; i++) {
+    const color = mix(from, to, i / 100);
+    if (contrast(color, bg) >= target) return color;
+  }
+  return to;
 }
 
 /** WCAG contrast ratio, from 1 (same color) to 21 (black on white). */

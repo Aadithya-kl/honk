@@ -10,7 +10,15 @@ import {
   selectTheme,
 } from "./index.ts";
 import { BUNDLED } from "./bundled.ts";
-import { checkScheme, contrast, MIN_TEXT_CONTRAST, mix, schemeToTheme } from "./scheme.ts";
+import {
+  checkScheme,
+  contrast,
+  MIN_ACCENT_CONTRAST,
+  MIN_PANEL_CONTRAST,
+  MIN_TEXT_CONTRAST,
+  mix,
+  schemeToTheme,
+} from "./scheme.ts";
 
 // A valid Base16 palette (Catppuccin Mocha).
 const PALETTE16 = {
@@ -38,9 +46,16 @@ describe("bundled themes", () => {
   });
 
   for (const entry of themes) {
-    test(`${entry.id} has readable text and only hex colors`, () => {
+    test(`${entry.id} has readable text, visible panels and only hex colors`, () => {
       const t = entry.theme;
       expect(contrast(t.fgPrimary, t.bgBase)).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+      for (const key of ["accent", "accentAlt", "red", "green", "yellow", "cyan", "orange"] as const) {
+        expect(contrast(t[key], t.bgBase), key).toBeGreaterThanOrEqual(MIN_ACCENT_CONTRAST);
+      }
+      for (const c of t.nickPalette) {
+        expect(contrast(c, t.bgBase), c).toBeGreaterThanOrEqual(MIN_ACCENT_CONTRAST);
+      }
+      expect(contrast(t.bgSidebar, t.bgBase)).toBeGreaterThanOrEqual(MIN_PANEL_CONTRAST);
       expect(t.nickPalette.length).toBeGreaterThanOrEqual(4);
       for (const [key, value] of Object.entries(t)) {
         const colors = Array.isArray(value) ? value : [value];
@@ -100,6 +115,25 @@ describe("schemeToTheme", () => {
     const t = schemeToTheme(r.scheme);
     expect(t.bgSidebar).toBe(mix("#ffffff", "#000000", 0.03));
     expect(t.bgFooter).toBe(mix("#ffffff", "#000000", 0.06));
+  });
+
+  test("makes side panels lighter when the background is pure black", () => {
+    const r = checkScheme(scheme16({ ...PALETTE16, base00: "#000000", base01: "#000000" }));
+    if (!r.ok) throw new Error(r.problems.join("; "));
+    const t = schemeToTheme(r.scheme);
+    expect(contrast(t.bgSidebar, "#000000")).toBeGreaterThanOrEqual(MIN_PANEL_CONTRAST);
+    expect(contrast(t.bgInput, t.bgFooter)).toBeGreaterThan(1.04);
+  });
+
+  test("moves a hard-to-read accent toward the text until it reaches 3:1", () => {
+    // A dark blue accent on a dark background.
+    const r = checkScheme(scheme16({ ...PALETTE16, base0D: "#1e3050" }));
+    if (!r.ok) throw new Error(r.problems.join("; "));
+    const accent = schemeToTheme(r.scheme).accent;
+    expect(accent).not.toBe("#1e3050");
+    expect(contrast(accent, "#1e1e2e")).toBeGreaterThanOrEqual(MIN_ACCENT_CONTRAST);
+    // Only just: the color moves no further than it needs to.
+    expect(contrast(accent, "#1e1e2e")).toBeLessThan(MIN_ACCENT_CONTRAST + 0.2);
   });
 
   test("does not use a colorful base06 as bright text", () => {
