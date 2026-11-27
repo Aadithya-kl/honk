@@ -33,6 +33,31 @@ Make one commit per user-visible change, so each change gets its own changelog
 line. Tests, docs, and refactors that belong to a change go in that change's
 commit.
 
+When one commit holds several user-visible changes, add one more Conventional
+Commit message per change at the bottom of the body, each after a blank line.
+Each one becomes its own changelog line:
+
+```
+feat: run omnibox actions on any server, not only the active one
+
+"+ Join #x" and "Message nick" rows show for each connected server.
+
+feat: rank omnibox matches like fzf and highlight the matched letters
+
+feat: rank the omnibox actions you used last first
+```
+
+release-please reads every body line that starts with `word: ` as one more
+message, even inside a paragraph. Wrap body text so that only the extra
+messages start that way: "A second word picks the server: #rust beta" must
+not wrap right before "server:".
+
+A pull request title follows the same rules: pull requests are squash merged,
+and the title becomes the commit message.
+
+CI checks the subjects. Check them before a push with
+`bun scripts/check-commits.ts origin/main..HEAD`.
+
 ## Releases
 
 Releases happen only when the user asks for one. Until then, the `version` in
