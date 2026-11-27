@@ -79,10 +79,15 @@ function readConfigFile(path: string): AppConfig | null {
   }
   const notifications = parsed.notifications ?? true;
   const theme = typeof parsed.theme === "string" ? parsed.theme : undefined;
-  if (!Array.isArray(parsed.servers)) return { servers: [], notifications, theme };
+  const mouse = parsed.mouse ?? true;
+  if (typeof mouse !== "boolean") {
+    throw new ConfigError(`${path}: "mouse" must be true or false, not ${JSON.stringify(mouse)}`);
+  }
+  if (!Array.isArray(parsed.servers)) return { servers: [], notifications, theme, mouse };
   return {
     notifications,
     theme,
+    mouse,
     servers: parsed.servers.map((s, idx) => ({
       id: s.id || s.name || s.host || `server-${idx + 1}`,
       name: s.name || s.id || s.host,
@@ -117,6 +122,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
   // With --config, that file is the config file even before it exists.
   let config: AppConfig = {
     servers: [],
+    mouse: true,
     path: typeof flags.config === "string" ? candidates[0] : undefined,
   };
 
@@ -129,6 +135,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): AppConfig {
   }
 
   if (typeof flags.theme === "string") config = { ...config, theme: flags.theme };
+  if (typeof flags.mouse === "boolean") config = { ...config, mouse: flags.mouse };
 
   // 2. Allow quick CLI --server override/addition
   if (typeof flags.server === "string") {

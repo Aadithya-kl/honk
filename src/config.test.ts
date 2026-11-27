@@ -134,3 +134,49 @@ describe("loadConfig with a broken file", () => {
     expect((err as Error).message).toEndWith('must hold a JSON object, such as {"servers": [...]}');
   });
 });
+
+describe("the mouse setting", () => {
+  /** Runs loadConfig on a config file holding `text`, with more flags after --config. */
+  function load(text: string, ...flags: string[]) {
+    const dir = mkdtempSync(join(tmpdir(), "honk-config-"));
+    try {
+      const path = join(dir, "honk.json");
+      writeFileSync(path, text);
+      return loadConfig(["--config", path, ...flags]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("is on when the key is missing, and with no config file", () => {
+    expect(load('{ "servers": [] }').mouse).toBe(true);
+    expect(load("{}").mouse).toBe(true);
+    // JSON null counts as missing, as it does for "notifications".
+    expect(load('{ "mouse": null }').mouse).toBe(true);
+    expect(loadConfig(["--config", join(tmpdir(), "honk-no-such-dir", "x.json")]).mouse).toBe(true);
+  });
+
+  test("follows true and false in the file", () => {
+    expect(load('{ "mouse": true, "servers": [] }').mouse).toBe(true);
+    expect(load('{ "mouse": false, "servers": [] }').mouse).toBe(false);
+    expect(load('{ "mouse": false }').mouse).toBe(false);
+  });
+
+  test("--no-mouse turns it off for one run, and --mouse turns it on", () => {
+    expect(load('{ "servers": [] }', "--no-mouse").mouse).toBe(false);
+    expect(load('{ "mouse": false }', "--mouse").mouse).toBe(true);
+  });
+
+  test("a value that is not a boolean is a ConfigError", () => {
+    for (const value of ['"false"', "0", "[]"]) {
+      let err: unknown;
+      try {
+        load(`{ "mouse": ${value}, "servers": [] }`);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(ConfigError);
+      expect((err as Error).message).toEndWith(`honk.json: "mouse" must be true or false, not ${value}`);
+    }
+  });
+});
