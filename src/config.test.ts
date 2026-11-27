@@ -106,22 +106,32 @@ describe("saveThemeSetting", () => {
   });
 });
 
-describe("loadConfig with a broken file", () => {
-  /** Runs loadConfig on a config file holding `text`, and returns what it throws. */
-  function loadError(text: string): unknown {
-    const dir = mkdtempSync(join(tmpdir(), "honk-config-"));
-    try {
-      const path = join(dir, "honk.json");
-      writeFileSync(path, text);
-      loadConfig(["--config", path]);
-      return undefined;
-    } catch (err) {
-      return err;
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+/**
+ * Runs loadConfig with --config pointing at honk.json in a new temp directory,
+ * holding `text`, or missing when `text` is null. More flags go after --config.
+ */
+function load(text: string | null, ...flags: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "honk-config-"));
+  try {
+    const path = join(dir, "honk.json");
+    if (text !== null) writeFileSync(path, text);
+    return loadConfig(["--config", path, ...flags]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
+}
 
+/** Runs load on a config file holding `text`, and returns what it throws. */
+function loadError(text: string): unknown {
+  try {
+    load(text);
+    return undefined;
+  } catch (err) {
+    return err;
+  }
+}
+
+describe("loadConfig with a broken file", () => {
   test("broken JSON is a ConfigError that names the file, not a stack trace", () => {
     const err = loadError('{"servers": [ {"host": "x",, } ]}');
     expect(err).toBeInstanceOf(ConfigError);
@@ -136,29 +146,12 @@ describe("loadConfig with a broken file", () => {
 });
 
 describe("the mouse setting", () => {
-  /** Runs loadConfig on a config file holding `text`, with more flags after --config. */
-  function load(text: string, ...flags: string[]) {
-    const dir = mkdtempSync(join(tmpdir(), "honk-config-"));
-    try {
-      const path = join(dir, "honk.json");
-      writeFileSync(path, text);
-      return loadConfig(["--config", path, ...flags]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-
   test("is on when the key is missing, and with no config file", () => {
     expect(load('{ "servers": [] }').mouse).toBe(true);
     expect(load("{}").mouse).toBe(true);
     // JSON null counts as missing, as it does for "notifications".
     expect(load('{ "mouse": null }').mouse).toBe(true);
-    const dir = mkdtempSync(join(tmpdir(), "honk-config-"));
-    try {
-      expect(loadConfig(["--config", join(dir, "missing.json")]).mouse).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    expect(load(null).mouse).toBe(true);
   });
 
   test("follows true and false in the file", () => {
@@ -169,16 +162,12 @@ describe("the mouse setting", () => {
 
   test("--no-mouse turns it off for one run", () => {
     expect(load('{ "servers": [] }', "--no-mouse").mouse).toBe(false);
+    expect(load(null, "--no-mouse").mouse).toBe(false);
   });
 
   test("a value that is not a boolean is a ConfigError", () => {
     for (const value of ['"false"', "0", "[]"]) {
-      let err: unknown;
-      try {
-        load(`{ "mouse": ${value}, "servers": [] }`);
-      } catch (e) {
-        err = e;
-      }
+      const err = loadError(`{ "mouse": ${value}, "servers": [] }`);
       expect(err).toBeInstanceOf(ConfigError);
       expect((err as Error).message).toEndWith(`honk.json: "mouse" must be true or false, not ${value}`);
     }
