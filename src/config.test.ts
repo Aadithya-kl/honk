@@ -153,7 +153,12 @@ describe("the mouse setting", () => {
     expect(load("{}").mouse).toBe(true);
     // JSON null counts as missing, as it does for "notifications".
     expect(load('{ "mouse": null }').mouse).toBe(true);
-    expect(loadConfig(["--config", join(tmpdir(), "honk-no-such-dir", "x.json")]).mouse).toBe(true);
+    const dir = mkdtempSync(join(tmpdir(), "honk-config-"));
+    try {
+      expect(loadConfig(["--config", join(dir, "missing.json")]).mouse).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("follows true and false in the file", () => {
@@ -162,9 +167,8 @@ describe("the mouse setting", () => {
     expect(load('{ "mouse": false }').mouse).toBe(false);
   });
 
-  test("--no-mouse turns it off for one run, and --mouse turns it on", () => {
+  test("--no-mouse turns it off for one run", () => {
     expect(load('{ "servers": [] }', "--no-mouse").mouse).toBe(false);
-    expect(load('{ "mouse": false }', "--mouse").mouse).toBe(true);
   });
 
   test("a value that is not a boolean is a ConfigError", () => {

@@ -304,7 +304,8 @@ Then a plain drag selects text, the terminal's copy and search work, and tmux
 copy mode works on honk's pane. These stop working:
 
 - Clicking a channel in the sidebar, a nick in the user list, a row in the
-  omnibox, and a nick, channel or link in the chat or the topic.
+  omnibox, a nick, channel or link in the chat or the topic, and the "new
+  messages below" bar.
 - The hand pointer over things you can click.
 - Scrolling the chat with the wheel. Use PageUp and PageDown, or Shift+Up and
   Shift+Down. Some terminals turn the wheel into Up and Down keys in
