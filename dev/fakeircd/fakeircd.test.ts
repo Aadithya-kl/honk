@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { connect, type Socket } from "node:net";
+import { IrcManager } from "../../src/irc/manager.ts";
 import { LineSplitter } from "../../src/irc/ircLine.ts";
 import { FakeIrcd } from "./server.ts";
 import { until } from "./testing.ts";
@@ -230,5 +231,35 @@ describe("FakeIrcd", () => {
     );
     expect(got).toContain(" 001 goose ");
     sock.destroy();
+  });
+});
+
+describe("honk against FakeIrcd", () => {
+  test("connects, joins, gets history, and sees live messages", async () => {
+    irc = await FakeIrcd.start({ network: "alpha" });
+    irc.fillHistory("#honk", 5);
+    const m = new IrcManager();
+    m.addServer({
+      id: "alpha",
+      name: "alpha",
+      host: "127.0.0.1",
+      port: irc.port,
+      tls: false,
+      nick: "goose",
+      channels: ["#honk"],
+      autoConnect: false,
+    });
+    try {
+      await m.connectServer("alpha");
+      const server = () => m.getSnapshot().servers.find((s) => s.id === "alpha")!;
+      const honk = () => server().buffers["#honk"];
+      await until(() => (honk()?.messages.filter((x) => x.isHistory).length ?? 0) === 5);
+      irc.say("bob", "#honk", "welcome back");
+      await until(() => honk()!.messages.some((x) => x.text === "welcome back"));
+      expect(server().status).toBe("connected");
+      expect(honk()!.users.map((u) => u.prefix + u.nick)).toContain("@alice");
+    } finally {
+      m.disconnectAll();
+    }
   });
 });

@@ -16,11 +16,12 @@ import {
   bufferKindFor,
   isChannelName,
   normalizeNick,
+  nameKey,
   sameNick,
   STATUS_BUFFER,
 } from "./names.ts";
 import type { MentionEvent } from "../notify.ts";
-import { SLASH_COMMANDS } from "./commands.ts";
+import { findSlashCommand, SLASH_COMMANDS, syntax } from "./commands.ts";
 import { DELIVERY_TIMEOUT_MS, DeliveryTracker, type SentLine } from "./delivery.ts";
 import {
   dmTargets,
@@ -43,6 +44,18 @@ import {
   demoWhois,
   type DemoEvent,
 } from "./demo.ts";
+import {
+  describeCertError,
+  describeConnectionError,
+  describeErrorReply,
+  describeStandardReply,
+  isErrorKind,
+  NUMERICS_MISSING_FROM_LIBRARY,
+  replyKind,
+  whoisLines,
+  type Endpoint,
+} from "./replies.ts";
+import { commandOf, parseLine } from "./ircLine.ts";
 import { createNodeRuntime } from "./runtime.ts";
 
 /** Messages kept per buffer from live traffic. */
@@ -66,23 +79,12 @@ const BACKOFF_MAX_MS = 60_000;
 const WAKE_CHECK_INTERVAL_MS = 5_000;
 const WAKE_JUMP_THRESHOLD_MS = 15_000;
 /**
- * How long a /join waits for the server's JOIN before it no longer takes focus. Some
- * failures (a forward to another channel, 477, or no reply at all) have no reply we can
- * match to the request.
+ * How long a /join waits for the server's JOIN before it no longer takes focus. Join
+ * errors and forwards end the request early; this limit covers a server that never answers.
  */
 const REQUESTED_JOIN_TTL_MS = 30_000;
-/** Join failures. Their first argument after our nick is the channel. */
-const JOIN_ERRORS = new Set([
-  "err_nosuchchannel",
-  "err_toomanychannels",
-  "err_channelisfull",
-  "err_inviteonlychan",
-  "err_bannedfromchan",
-  "err_badchannelkey",
-  "err_badchanmask",
-  "err_badchanname",
-]);
-
+/** Nick errors at login that another nick can get past: 433 (in use) and 437 (held by the network). */
+const NICK_RETRY_ERRORS = new Set(["err_nicknameinuse", "err_unavailresource"]);
 interface ServerControl {
   manualDisconnect: boolean;
   fatalError: boolean;
@@ -100,6 +102,15 @@ interface ServerControl {
   /** Missed mentions found in history, waiting to be reported as one batch. */
   missedMentions: MentionEvent[];
   missedTimer: ReturnType<typeof setTimeout> | null;
+  /** Lowercase nicks whose WHOIS reply is arriving (311 to 318): their "is away" goes in the WHOIS lines. */
+  pendingWhois: Set<string>;
+  /** The /history requests waiting for their batch (or FAIL), oldest first. */
+  historyRequests: HistoryRequest[];
+  /**
+   * The away text last shown, by nick (see nameKey) and then by buffer, so a DM says
+   * "is away" once, not per message.
+   */
+  awayShown: Map<string, Map<string, string>>;
 }
 
 function createControl(): ServerControl {
@@ -115,6 +126,9 @@ function createControl(): ServerControl {
     stableTimer: null,
     missedMentions: [],
     missedTimer: null,
+    pendingWhois: new Set(),
+    historyRequests: [],
+    awayShown: new Map(),
   };
 }
 
@@ -148,6 +162,17 @@ function isFatalErrorMessage(message: string): boolean {
     m.includes("z-lined") ||
     m.includes("you are banned")
   );
+}
+
+/** "Usage: /whois <nick>", from the command table, so it matches /help and the omnibox. */
+function usage(name: string): string {
+  const cmd = findSlashCommand(name);
+  return `Usage: ${cmd ? syntax(cmd) : `/${name}`}`;
+}
+
+/** The error for a command that needs a channel or DM, used from *status. */
+function insideOnly(name: string): string {
+  return `Use /${name} inside a channel or DM.`;
 }
 
 function computeBackoffMs(attempt: number): number {
@@ -197,14 +222,71 @@ function requestHistory(
   target: string,
   anchor: string,
   limit: number,
+  label?: string,
 ): void {
   void client.send(
+    label === undefined ? {} : { label },
     "CHATHISTORY" as never,
     subcommand as never,
     target as never,
     anchor as never,
     String(limit) as never,
   );
+}
+
+/** A /history request waiting for its reply. */
+interface HistoryRequest {
+  /** The buffer it was typed in, as nameKey. */
+  target: string;
+  /**
+   * The label tag sent with it, when the server has labeled-response. The server copies
+   * it onto the reply, so a FAIL or a batch matches this request and no other.
+   */
+  label?: string;
+}
+
+/** Counts the labels sent with /history, so each one is new on its connection. */
+let historyLabels = 0;
+
+/**
+ * Takes the /history request that a history batch answers out of `pending`. A labeled
+ * batch matches by label. An unlabeled one (the server has no labeled-response) matches
+ * an unlabeled request for the same target. Returns undefined when the batch answers no
+ * /history, such as the history honk fetches on join.
+ *
+ *   pending [{ target: "#a", label: "h1" }], batch label "h1"         -> the #a request
+ *   pending [{ target: "#a" }],              no label, batch target #a -> the #a request
+ *   pending [{ target: "#a", label: "h1" }], no label, batch target #a -> undefined
+ */
+function takeHistoryRequest(
+  pending: HistoryRequest[],
+  label: string | undefined,
+  target: string,
+): HistoryRequest | undefined {
+  const key = nameKey(target);
+  const i =
+    label !== undefined
+      ? pending.findIndex((r) => r.label === label)
+      : pending.findIndex((r) => r.label === undefined && r.target === key);
+  return i === -1 ? undefined : pending.splice(i, 1)[0];
+}
+
+/**
+ * The /history requests still waiting after a FAIL CHATHISTORY. A labeled FAIL ends
+ * only its own request. An unlabeled FAIL can't say which request it answers, so every
+ * unlabeled request stops waiting; labeled ones still get their own reply.
+ *
+ *   [#a h1, #b h2], FAIL label h2 -> [#a h1]
+ *   [#a, #b],       FAIL no label -> []
+ *   [#a h1],        FAIL no label -> [#a h1]   (the FAIL is for a request honk sent unlabeled)
+ */
+function afterHistoryFail(
+  pending: HistoryRequest[],
+  label: string | undefined,
+): HistoryRequest[] {
+  return label !== undefined
+    ? pending.filter((r) => r.label !== label)
+    : pending.filter((r) => r.label !== undefined);
 }
 
 function createBuffer(name: string, kind: BufferKind): BufferState {
@@ -283,14 +365,14 @@ function demoUsers(entries: string[]): NickEntry[] {
 }
 
 function joinKey(serverId: string, channel: string): string {
-  return `${serverId}\n${channel.toLowerCase()}`;
+  return `${serverId}\n${nameKey(channel)}`;
 }
 
 function channelsWithNick(server: ServerState, nick: string): string[] {
-  const lower = nick.toLowerCase();
+  const lower = nameKey(nick);
   return server.bufferOrder.filter((name) => {
     const buf = server.buffers[name];
-    return buf?.kind === "channel" && buf.users.some((u) => u.nick.toLowerCase() === lower);
+    return buf?.kind === "channel" && buf.users.some((u) => nameKey(u.nick) === lower);
   });
 }
 
@@ -351,7 +433,7 @@ export class IrcManager {
         this.pushMessage(
           id,
           STATUS_BUFFER,
-          makeMessage("system", "System wake detected — reconnecting…"),
+          makeMessage("system", "The computer woke from sleep. Reconnecting…"),
         );
         void this.connectServer(id, { manual: true });
       }
@@ -374,7 +456,7 @@ export class IrcManager {
         this.pushMessage(
           id,
           STATUS_BUFFER,
-          makeMessage("system", "Network changed. Reconnecting now…"),
+          makeMessage("system", "The network changed. Reconnecting now…"),
         );
         void this.connectServer(id, { manual: true });
       } else if (server.status === "connected") {
@@ -394,6 +476,11 @@ export class IrcManager {
   }
 
   /** True (and forgets the request) if the user ran /join for this channel and it hasn't expired. */
+  /** Remembers that you asked to join `channel`, so its JOIN moves the view there. */
+  private noteRequestedJoin(serverId: string, channel: string): void {
+    this.requestedJoins.set(joinKey(serverId, channel), Date.now() + REQUESTED_JOIN_TTL_MS);
+  }
+
   private takeRequestedJoin(serverId: string, channel: string): boolean {
     const key = joinKey(serverId, channel);
     const expires = this.requestedJoins.get(key);
@@ -401,11 +488,21 @@ export class IrcManager {
     return expires !== undefined && expires > Date.now();
   }
 
-  private forgetRequestedJoins(serverId: string): void {
+  /** Forgets the requests waiting for an answer: the connection that would answer is gone. */
+  private forgetPendingRequests(serverId: string): void {
+    const ctrl = this.getControl(serverId);
+    ctrl.historyRequests = [];
+    ctrl.pendingWhois.clear();
+    ctrl.awayShown.clear();
     const prefix = joinKey(serverId, "");
     for (const key of this.requestedJoins.keys()) {
       if (key.startsWith(prefix)) this.requestedJoins.delete(key);
     }
+  }
+
+  /** Forgets which "is away" texts were shown for this nick, in every buffer. */
+  private forgetAwayShown(serverId: string, nick: string): void {
+    this.getControl(serverId).awayShown.delete(nameKey(nick));
   }
 
   private clearServerTimers(ctrl: ServerControl): void {
@@ -485,7 +582,7 @@ export class IrcManager {
       ),
       makeMessage(
         "system",
-        "Or create honk.json (see honk.example.json) for multi-server auto-connect. Type /help for commands.",
+        "Or list your servers in honk.json (see honk.example.json) to connect at startup. Type /help to list the commands.",
       ),
       makeMessage("system", "To look around without connecting anywhere, type /demo."),
     );
@@ -601,8 +698,7 @@ export class IrcManager {
     if (prev) safeDisconnect(prev);
 
     const cfg = server.config;
-    const tls = cfg.tls ?? true;
-    const port = cfg.port ?? (tls ? 6697 : 6667);
+    const { port, tls } = this.endpoint(serverId);
 
     // Determine channels to join:
     // - On bouncers (soju), only send config.channels on first connect when no channels are open;
@@ -625,7 +721,7 @@ export class IrcManager {
       STATUS_BUFFER,
       makeMessage(
         "system",
-        `Connecting to ${cfg.host}:${port} (${tls ? "TLS" : "plain"}) as ${cfg.nick}…`,
+        `Connecting to ${cfg.host}:${port} (${tls ? "TLS" : "no TLS"}) as ${cfg.nick}…`,
       ),
     );
 
@@ -651,11 +747,19 @@ export class IrcManager {
     const abort = new AbortController();
     connectAborts.set(client, abort);
     (client as unknown as { runtime: ReturnType<typeof createNodeRuntime> }).runtime =
-      createNodeRuntime(abort.signal);
+      createNodeRuntime(abort.signal, (line) => {
+        if (this.clients.get(serverId) === client) this.onRawLine(serverId, line);
+      });
 
     // Request IRCv3 draft/chathistory when advertised by server/bouncer (e.g. soju)
     if (!client.state.caps.requested.includes("draft/chathistory")) {
       client.state.caps.requested.push("draft/chathistory");
+    }
+    // Without it, Ergo plays joins, parts and mode changes back as fake messages from
+    // "HistServ" ("alice joined the channel"). With it, they come as real JOIN and MODE
+    // lines inside the history batch, which the batch handler skips.
+    if (!client.state.caps.requested.includes("draft/event-playback")) {
+      client.state.caps.requested.push("draft/event-playback");
     }
 
     this.clients.set(serverId, client);
@@ -718,7 +822,7 @@ export class IrcManager {
     this.noteConnectionLost(serverId, ctrl);
     ctrl.registered = false;
     this.clearServerTimers(ctrl);
-    this.forgetRequestedJoins(serverId);
+    this.forgetPendingRequests(serverId);
 
     const client = this.clients.get(serverId);
     this.clients.delete(serverId);
@@ -740,7 +844,7 @@ export class IrcManager {
         STATUS_BUFFER,
         makeMessage("system", "Disconnected."),
       );
-      if (client) this.noteOffline(serverId, "Disconnected. Use /connect to reconnect.");
+      if (client) this.noteOffline(serverId, "Disconnected. Type /connect to reconnect.");
     }
   }
 
@@ -792,31 +896,25 @@ export class IrcManager {
       const server = this.servers.get(serverId);
       const ctrl = this.getControl(serverId);
       const errText = err.message || String(err);
-
+      const at = this.endpoint(serverId);
+      const certCode = tlsCertErrorCode(err);
+      const fatal = Boolean(certCode) || isFatalErrorMessage(errText);
       this.pushMessage(
         serverId,
         STATUS_BUFFER,
-        makeMessage("error", `Error (${err.type}): ${errText}`),
+        makeMessage(
+          "error",
+          certCode ? describeCertError(certCode, at) : describeConnectionError(err, at, fatal),
+        ),
       );
 
-      const certCode = tlsCertErrorCode(err);
-      if (certCode || isFatalErrorMessage(errText)) {
+      if (fatal) {
         ctrl.fatalError = true;
         this.clearServerTimers(ctrl);
         if (server) {
           server.status = "error";
           server.reconnectInfo = undefined;
         }
-        this.pushMessage(
-          serverId,
-          STATUS_BUFFER,
-          makeMessage(
-            "error",
-            certCode
-              ? `Auto-reconnect paused: the server's TLS certificate was rejected (${certCode}). Check the host name and port, then run /connect.`
-              : "Auto-reconnect paused (fatal/auth error). Fix credentials and run /connect.",
-          ),
-        );
         return;
       }
 
@@ -842,7 +940,7 @@ export class IrcManager {
       this.pushMessage(
         serverId,
         STATUS_BUFFER,
-        makeMessage("system", "Socket connected, registering…"),
+        makeMessage("system", "Connected. Registering…"),
       );
     });
 
@@ -931,7 +1029,7 @@ export class IrcManager {
 
       this.noteConnectionLost(serverId, ctrl);
       ctrl.registered = false;
-      this.forgetRequestedJoins(serverId);
+      this.forgetPendingRequests(serverId);
       this.failPendingLines(serverId);
       if (ctrl.stableTimer) {
         clearTimeout(ctrl.stableTimer);
@@ -967,40 +1065,8 @@ export class IrcManager {
 
     client.on("error_reply", (msg) => {
       if (isStale()) return;
-      const server = this.servers.get(serverId);
-      const ctrl = this.getControl(serverId);
-
-      // Handle nick collision (433) during initial registration on direct servers
-      if (
-        msg.command === "err_nicknameinuse" &&
-        !ctrl.registered &&
-        server &&
-        ctrl.nickCollisionTries < 3
-      ) {
-        ctrl.nickCollisionTries += 1;
-        const fallback = `${server.config.nick}${"_".repeat(ctrl.nickCollisionTries)}`;
-        server.nick = fallback;
-        this.pushMessage(
-          serverId,
-          STATUS_BUFFER,
-          makeMessage("system", `Nick in use, trying ${fallback}…`),
-        );
-        client.nick(fallback);
-        return;
-      }
-
-      if (JOIN_ERRORS.has(msg.command) && msg.params.args[1]) {
-        this.requestedJoins.delete(joinKey(serverId, msg.params.args[1]));
-      }
-
-      const detail = [msg.params.args.join(" "), msg.params.text]
-        .filter(Boolean)
-        .join(": ");
-      this.pushMessage(
-        serverId,
-        this.replyTarget(serverId),
-        makeMessage("error", `${msg.command}${detail ? ` — ${detail}` : ""}`),
-      );
+      // The first param is your own nick.
+      this.onNumeric(serverId, msg.command, msg.params.args.slice(1), msg.params.text ?? "");
     });
 
     client.on("join", (msg) => {
@@ -1146,7 +1212,7 @@ export class IrcManager {
         msg.params.channel,
         makeMessage(
           "system",
-          `${who} changed the topic to: ${buf.topic || "(cleared)"}`,
+          buf.topic ? `${who} changed the topic to: ${buf.topic}` : `${who} cleared the topic`,
         ),
       );
     });
@@ -1166,6 +1232,24 @@ export class IrcManager {
       if (!server) return;
 
       const batchTarget = batch.params.params[0];
+      // A /history that found nothing older says so, instead of nothing happening.
+      // The label is on this BATCH line, or on a labeled-response batch around it.
+      const parentRef = batch.params.tags?.batch;
+      const label =
+        batch.params.tags?.label ?? (parentRef && client.state.batches.get(parentRef)?.tags?.label);
+      const ctrl = this.getControl(serverId);
+      if (batchTarget && takeHistoryRequest(ctrl.historyRequests, label, batchTarget)) {
+        const any = batch.params.messages.some(
+          (m) => m.command === "privmsg" || m.command === "notice",
+        );
+        if (!any) {
+          this.pushMessage(
+            serverId,
+            batchTarget,
+            makeMessage("system", `The server has no older messages in ${batchTarget}.`),
+          );
+        }
+      }
       for (const raw of batch.params.messages) {
         const cmd = raw.command;
         if (cmd !== "privmsg" && cmd !== "notice") continue;
@@ -1221,6 +1305,8 @@ export class IrcManager {
       // A DM opened as "/msg dave" takes the sender's real casing ("Dave") when they write.
       if (!isSelf && !isChannelName(target)) this.renameBuffer(serverId, target, target);
       const isHistory = isHistoryBatch(tags);
+      // Someone who writes is back, so their next "is away" shows again, even with the same text.
+      if (!isSelf && !isHistory) this.forgetAwayShown(serverId, from);
       const isMention =
         !isSelf &&
         !isHistory &&
@@ -1279,19 +1365,92 @@ export class IrcManager {
 
     client.on("whois_reply", (msg) => {
       if (isStale()) return;
-      const p = msg.params;
-      const channels = p.channels?.length
-        ? ` | channels: ${p.channels.join(" ")}`
-        : "";
+      const target = this.replyTarget(serverId);
+      for (const line of whoisLines(msg.params)) {
+        this.pushMessage(serverId, target, makeMessage("system", line));
+      }
+    });
+
+    // A WHOIS reply runs from 311 to 318. Its "is away" (301) goes in the WHOIS lines,
+    // not on its own. Tracked by the reply itself, so a /raw WHOIS works the same.
+    client.on("raw:rpl_whoisuser", (msg) => {
+      if (isStale()) return;
+      const nick = msg.params[1];
+      if (nick) this.getControl(serverId).pendingWhois.add(nameKey(nick));
+    });
+    client.on("raw:rpl_endofwhois", (msg) => {
+      if (isStale()) return;
+      const nick = msg.params[1];
+      if (nick) this.getControl(serverId).pendingWhois.delete(nameKey(nick));
+    });
+
+    // "alice is away": the server answers a message to someone who is away. It says so
+    // on every message, so a DM shows it only when the away text changes.
+    client.on("raw:rpl_away", (msg) => {
+      if (isStale()) return;
+      const [, nick, away] = msg.params;
+      if (!nick) return;
+      const ctrl = this.getControl(serverId);
+      const key = nameKey(nick);
+      if (ctrl.pendingWhois.has(key)) return;
+      const where = this.hasBuffer(serverId, nick) ? nick : this.replyTarget(serverId);
+      const text = away ?? "";
+      let shown = ctrl.awayShown.get(key);
+      if (!shown) ctrl.awayShown.set(key, (shown = new Map()));
+      if (shown.get(nameKey(where)) === text) return;
+      shown.set(nameKey(where), text);
+      this.pushMessage(
+        serverId,
+        where,
+        makeMessage("system", text ? `${nick} is away: ${text}` : `${nick} is away.`),
+      );
+    });
+
+    // 900: the SASL login worked. Worth saying, since a wrong password stops honk.
+    client.on("raw:rpl_loggedin", (msg) => {
+      if (isStale()) return;
+      const account = msg.params[2];
+      if (!account) return;
+      this.pushMessage(
+        serverId,
+        STATUS_BUFFER,
+        makeMessage("system", `Logged in to the account ${account}.`),
+      );
+    });
+
+    client.on("invite", (msg) => {
+      if (isStale()) return;
+      const by = normalizeNick(msg.source?.name) || "Someone";
+      const channel = msg.params.channel;
       this.pushMessage(
         serverId,
         this.replyTarget(serverId),
-        makeMessage(
-          "system",
-          `WHOIS ${p.nick} (${p.username}@${p.host}) "${p.realname}" on ${p.server}${channels}`,
-        ),
+        makeMessage("system", `${by} invited you to ${channel}. Type /join ${channel} to accept.`),
       );
     });
+
+    // A failed CHATHISTORY sends no batch, so its /history request waits for nothing.
+    // The "fail" event below has no tags, and the label is a tag, so this reads the raw line.
+    client.on("raw:fail", (msg) => {
+      if (isStale() || msg.params[0]?.toUpperCase() !== "CHATHISTORY") return;
+      const ctrl = this.getControl(serverId);
+      ctrl.historyRequests = afterHistoryFail(ctrl.historyRequests, msg.tags?.label);
+    });
+
+    // IRCv3 standard replies. FAIL is an error; WARN and NOTE are information.
+    for (const kind of ["fail", "warn", "note"] as const) {
+      client.on(kind, (msg) => {
+        if (isStale()) return;
+        this.pushMessage(
+          serverId,
+          this.replyTarget(serverId),
+          makeMessage(
+            kind === "fail" ? "error" : "system",
+            describeStandardReply(msg.params.command, msg.params.description),
+          ),
+        );
+      });
+    }
   }
 
   /**
@@ -1373,6 +1532,124 @@ export class IrcManager {
       }
       this.pushMessage(serverId, name, makeMessage("system", text));
     }
+  }
+
+  /** The host, port and TLS setting a server connects with. TLS is on unless the config turns it off. */
+  private endpoint(serverId: string): Endpoint & { tls: boolean } {
+    const cfg = this.servers.get(serverId)?.config;
+    const tls = cfg?.tls ?? true;
+    return { host: cfg?.host || serverId, port: cfg?.port ?? (tls ? 6697 : 6667), tls };
+  }
+
+  /** Why a command or a message can't go out now, and what to do about it. */
+  private notConnectedText(server: ServerState | undefined): string {
+    if (!server?.config.host) {
+      return "Not connected. Connect with /connect <host> [port] [nick].";
+    }
+    switch (server.status) {
+      case "connecting":
+        return `Still connecting to ${server.name}. Wait a moment and try again.`;
+      case "reconnecting":
+        return `Reconnecting to ${server.name}. Wait a moment, or type /connect to retry now.`;
+      default:
+        return `Not connected to ${server.name}. Type /connect to reconnect.`;
+    }
+  }
+
+  /**
+   * Shows a numeric reply in plain words (see replies.ts), as an error or, for one that
+   * reports something that worked, as a normal line. It goes to the buffer it is
+   * about (the channel or DM it names) when that is open, else where you are. A JOIN you
+   * asked for on another server (from the omnibox) also shows where you are.
+   */
+  private showNumericReply(serverId: string, name: string, subject: string[], text: string): void {
+    // The bookkeeping runs even for an error that shows nothing.
+    const requested =
+      isErrorKind(name, "join") && subject[0] ? this.takeRequestedJoin(serverId, subject[0]) : false;
+    // A message the server refused: mark that line "not sent" instead of letting the
+    // next PONG mark it delivered.
+    if (isErrorKind(name, "message") && subject[0]) {
+      const refused = this.delivery.reject(serverId, subject[0]);
+      if (refused) this.setDelivery(serverId, [refused], "failed");
+    }
+    const described = describeErrorReply(name, subject, text);
+    if (described === null) return;
+    const about = isErrorKind(name, "nick")
+      ? undefined
+      : subject.find((word) => word !== STATUS_BUFFER && this.hasBuffer(serverId, word));
+    const kind = replyKind(name);
+    this.pushMessage(serverId, about ?? this.replyTarget(serverId), makeMessage(kind, described));
+    if (requested) this.showInActiveFrom(serverId, kind, described);
+  }
+
+  /**
+   * Also shows a line from another server where you are, with that server's name in
+   * front ("beta: Can't join #x..."). Nothing happens if you are on that server.
+   */
+  private showInActiveFrom(serverId: string, kind: MessageKind, text: string): void {
+    if (!this.active || this.active.serverId === serverId) return;
+    const name = this.servers.get(serverId)?.name ?? serverId;
+    this.pushMessage(this.active.serverId, this.active.buffer, makeMessage(kind, `${name}: ${text}`));
+  }
+
+  /**
+   * A raw line from the server, before irc-client-ts parses it. Only numerics the library
+   * doesn't know are handled here, because it drops their number. See replies.ts.
+   */
+  private onRawLine(serverId: string, line: string): void {
+    // Every line passes here, so look at the command before parsing the whole line.
+    const name = NUMERICS_MISSING_FROM_LIBRARY[commandOf(line)];
+    if (!name) return;
+    const { params } = parseLine(line);
+    // ":srv 470 goose #old #new :Forwarding": your nick first, the text last.
+    this.onNumeric(serverId, name, params.slice(1, -1), params.at(-1) ?? "");
+  }
+
+  /**
+   * A numeric reply by name, from either irc-client-ts ("error_reply") or onRawLine.
+   * `subject` is the words between your nick and the text.
+   */
+  private onNumeric(serverId: string, name: string, subject: string[], text: string): void {
+    const server = this.servers.get(serverId);
+    const ctrl = this.getControl(serverId);
+    const client = this.clients.get(serverId);
+
+    // At login, a nick that is taken (433) or held by the network (437) is retried
+    // with "_" added, up to 3 times.
+    if (
+      NICK_RETRY_ERRORS.has(name) &&
+      !ctrl.registered &&
+      server &&
+      client &&
+      ctrl.nickCollisionTries < 3
+    ) {
+      ctrl.nickCollisionTries += 1;
+      const fallback = `${server.config.nick}${"_".repeat(ctrl.nickCollisionTries)}`;
+      server.nick = fallback;
+      this.pushMessage(
+        serverId,
+        STATUS_BUFFER,
+        makeMessage("system", `Nick ${subject[0] ?? ""} is not available, trying ${fallback}…`),
+      );
+      client.nick(fallback);
+      return;
+    }
+
+    if (name === "err_linkchannel") {
+      // "#old is forwarded to #new": the JOIN for #new follows. If you asked for #old,
+      // treat it as a request for #new, so the view moves there.
+      const [from = "", to = ""] = subject;
+      if (to && this.takeRequestedJoin(serverId, from)) {
+        this.noteRequestedJoin(serverId, to);
+      }
+      this.pushMessage(
+        serverId,
+        this.replyTarget(serverId),
+        makeMessage("system", `${from} forwards to ${to}, so you are joining ${to} instead.`),
+      );
+      return;
+    }
+    this.showNumericReply(serverId, name, subject, text);
   }
 
   /** Where replies to a command (errors, WHOIS) go: the active buffer if it is on this server. */
@@ -1828,7 +2105,7 @@ export class IrcManager {
       case "j":
       case "join": {
         if (!args[0]) {
-          reply("Usage: /join #channel", "error");
+          reply(usage("join"), "error");
           return true;
         }
         const targets = args[0]
@@ -1855,7 +2132,7 @@ export class IrcManager {
       case "leave": {
         const target = args[0] && isChannelName(args[0]) ? args[0] : activeBuffer;
         if (target === STATUS_BUFFER) {
-          reply("Use /part inside a channel or DM.", "error");
+          reply(insideOnly("part"), "error");
         } else {
           this.removeBuffer(id, target);
         }
@@ -1867,7 +2144,7 @@ export class IrcManager {
         const target = args[0];
         const text = args.slice(1).join(" ");
         if (!target) {
-          reply("Usage: /msg <nick|#channel> [message]", "error");
+          reply(usage("msg"), "error");
           return true;
         }
         this.ensureBuffer(id, target);
@@ -1880,8 +2157,12 @@ export class IrcManager {
       }
 
       case "me": {
-        if (!rest || activeBuffer === STATUS_BUFFER) {
-          reply("Usage: /me <action> (inside a channel or DM)", "error");
+        if (activeBuffer === STATUS_BUFFER) {
+          reply(insideOnly("me"), "error");
+          return true;
+        }
+        if (!rest) {
+          reply(usage("me"), "error");
           return true;
         }
         this.pushMessage(id, activeBuffer, makeMessage("action", rest, { from: server.nick, isSelf: true }));
@@ -1892,7 +2173,7 @@ export class IrcManager {
       case "nick": {
         const next = args[0];
         if (!next) {
-          reply("Usage: /nick <newnick>", "error");
+          reply(usage("nick"), "error");
           return true;
         }
         const old = server.nick;
@@ -1931,17 +2212,22 @@ export class IrcManager {
 
       case "whois": {
         if (!args[0]) {
-          reply("Usage: /whois <nick>", "error");
+          reply(usage("whois"), "error");
           return true;
         }
-        for (const line of demoWhois(args[0])) reply(line);
+        // The channels the nick is in, as a real WHOIS lists them: "@#honk #bun".
+        const channels = server.bufferOrder.flatMap((name) => {
+          const user = server.buffers[name]?.users.find((u) => sameNick(u.nick, args[0]));
+          return user ? [`${user.prefix}${name}`] : [];
+        });
+        for (const line of whoisLines(demoWhois(args[0], server.name, channels))) reply(line);
         return true;
       }
 
       case "history": {
         const buf = server.buffers[activeBuffer];
         if (!buf || buf.kind === "status") {
-          reply("Use /history inside a channel or DM.", "error");
+          reply(insideOnly("history"), "error");
           return true;
         }
         const oldest = buf.messages[0]?.timestamp.getTime() ?? Date.now();
@@ -2027,9 +2313,7 @@ export class IrcManager {
         buffer,
         makeMessage(
           "error",
-          server?.status === "reconnecting"
-            ? "Reconnecting… wait a moment or run /connect to retry now."
-            : "Not connected. Use /connect <host> [port] [nick].",
+          this.notConnectedText(server),
         ),
       );
       return false;
@@ -2039,7 +2323,10 @@ export class IrcManager {
       this.pushMessage(
         serverId,
         buffer,
-        makeMessage("system", "Join a channel first with /join #channel"),
+        makeMessage(
+          "system",
+          "Messages can't be sent from *status. Join a channel with /join #channel, or open a DM with /msg <nick>.",
+        ),
       );
       return false;
     }
@@ -2073,9 +2360,13 @@ export class IrcManager {
 
     switch (cmd) {
       case "help": {
-        const list = SLASH_COMMANDS.map((c) => (c.args ? `/${c.name} ${c.args}` : `/${c.name}`))
-          .join(" | ");
-        reply(`Commands: ${list}. Press Ctrl+K for the omnibox.`);
+        // One line per command. No padding: the chat column can be narrow, and padded
+        // columns would wrap every line.
+        reply("Commands:");
+        for (const c of SLASH_COMMANDS) {
+          reply(`${syntax(c)} - ${c.summary}`);
+        }
+        reply("Press Ctrl+K for the omnibox, then ? to see what it does.");
         return;
       }
 
@@ -2085,7 +2376,7 @@ export class IrcManager {
           if (server && server.config.host) {
             void this.connectServer(server.id, { manual: true });
           } else {
-            reply("Usage: /connect <host> [port|+tlsport] [nick] (6697 is TLS)", "error");
+            reply(`${usage("connect")} (port 6697, or +port, uses TLS)`, "error");
           }
           return;
         }
@@ -2138,8 +2429,8 @@ export class IrcManager {
 
       case "j":
       case "join": {
-        if (!client || !server) return reply("Not connected.", "error");
-        if (!args[0]) return reply("Usage: /join #channel[,#channel...] [key[,key...]]", "error");
+        if (!client || !server) return reply(this.notConnectedText(server), "error");
+        if (!args[0]) return reply(usage("join"), "error");
         // "/join #a,#b keyA": the server sends one JOIN per channel.
         const keys = args[1]?.split(",") ?? [];
         const targets = args[0]
@@ -2149,14 +2440,13 @@ export class IrcManager {
         const descriptions = targets.map((target, i): string | [string, string] =>
           keys[i] ? [target, keys[i]] : target,
         );
-        if (descriptions.length === 0) return reply("Usage: /join #channel", "error");
-        const expires = Date.now() + REQUESTED_JOIN_TTL_MS;
+        if (descriptions.length === 0) return reply(usage("join"), "error");
         for (const target of targets) {
           // Already in it: the server sends no JOIN, so switch now.
           if (server.buffers[this.bufferKey(server.id, target)]?.kind === "channel") {
             this.setActive(server.id, target);
           } else {
-            this.requestedJoins.set(joinKey(server.id, target), expires);
+            this.noteRequestedJoin(server.id, target);
           }
         }
         client.join(...(descriptions as [string, ...(string | [string, string])[]]));
@@ -2166,32 +2456,32 @@ export class IrcManager {
       case "p":
       case "part":
       case "leave": {
-        if (!client || !server) return reply("Not connected.", "error");
         const target =
           args[0] && isChannelName(args[0]) ? args[0] : activeBuffer;
         const reason =
           args[0] && isChannelName(args[0]) ? args.slice(1).join(" ") : rest;
+        if (target === STATUS_BUFFER) return reply(insideOnly("part"), "error");
+        // Closing a DM is local, so it works offline too.
         if (!isChannelName(target)) {
-          if (target !== STATUS_BUFFER) {
-            this.removeBuffer(server.id, target);
-          }
+          if (server) this.removeBuffer(server.id, target);
           return;
         }
+        if (!client || !server) return reply(this.notConnectedText(server), "error");
         client.part(target, reason || undefined);
         return;
       }
 
       case "msg":
       case "query": {
-        if (!client || !server) return reply("Not connected.", "error");
+        if (!client || !server) return reply(this.notConnectedText(server), "error");
         // Before registration the server would not answer the delivery PING.
         if (server.status !== "connected" && args.length > 1) {
-          return reply("Not connected yet. Wait a moment and try again.", "error");
+          return reply(this.notConnectedText(server), "error");
         }
         const target = args[0];
         const text = args.slice(1).join(" ");
         if (!target)
-          return reply("Usage: /msg <nick|#channel> [message]", "error");
+          return reply(usage("msg"), "error");
         this.ensureBuffer(server.id, target);
         this.setActive(server.id, target);
         if (text) {
@@ -2202,12 +2492,11 @@ export class IrcManager {
       }
 
       case "me": {
-        if (!client || !server) return reply("Not connected.", "error");
-        if (!rest || activeBuffer === STATUS_BUFFER) {
-          return reply("Usage: /me <action> (inside a channel or DM)", "error");
-        }
+        if (!client || !server) return reply(this.notConnectedText(server), "error");
+        if (activeBuffer === STATUS_BUFFER) return reply(insideOnly("me"), "error");
+        if (!rest) return reply(usage("me"), "error");
         if (server.status !== "connected") {
-          return reply("Not connected yet. Wait a moment and try again.", "error");
+          return reply(this.notConnectedText(server), "error");
         }
         client.action(activeBuffer, rest);
         this.pushSent(server.id, client, activeBuffer, makeMessage("action", rest, { from: server.nick }));
@@ -2215,8 +2504,8 @@ export class IrcManager {
       }
 
       case "nick": {
-        if (!client) return reply("Not connected.", "error");
-        if (!args[0]) return reply("Usage: /nick <newnick>", "error");
+        if (!client) return reply(this.notConnectedText(server), "error");
+        if (!args[0]) return reply(usage("nick"), "error");
         client.nick(args[0]);
         return;
       }
@@ -2234,27 +2523,27 @@ export class IrcManager {
       }
 
       case "whois": {
-        if (!client) return reply("Not connected.", "error");
-        if (!args[0]) return reply("Usage: /whois <nick>", "error");
+        if (!client) return reply(this.notConnectedText(server), "error");
+        if (!args[0]) return reply(usage("whois"), "error");
         client.whois(args[0]);
         return;
       }
 
       case "raw": {
-        if (!client) return reply("Not connected.", "error");
-        if (!rest) return reply("Usage: /raw <COMMAND ...>", "error");
+        if (!client) return reply(this.notConnectedText(server), "error");
+        if (!rest) return reply(usage("raw"), "error");
         const [rawCmd, ...rawParams] = rest.split(" ");
         void client.send(rawCmd as never, ...(rawParams as never[]));
         return;
       }
 
       case "history": {
-        if (!client || !server) return reply("Not connected.", "error");
+        if (!client || !server) return reply(this.notConnectedText(server), "error");
         if (!client.state.caps.enabled.has("draft/chathistory")) {
-          return reply("Server does not advertise draft/chathistory.", "error");
+          return reply("This server does not keep history, so /history can't load older messages.", "error");
         }
         if (activeBuffer === STATUS_BUFFER) {
-          return reply("Use /history inside a channel or DM.", "error");
+          return reply(insideOnly("history"), "error");
         }
         const wanted = Math.min(200, Math.max(1, Number(args[0]) || 50));
         const buf = server.buffers[activeBuffer];
@@ -2276,17 +2565,14 @@ export class IrcManager {
         const oldest = buf?.messages.find(
           (m) => m.kind === "message" || m.kind === "action" || m.kind === "notice",
         );
-        if (oldest) {
-          requestHistory(
-            client,
-            "BEFORE",
-            activeBuffer,
-            `timestamp=${oldest.timestamp.toISOString()}`,
-            limit,
-          );
-        } else {
-          requestHistory(client, "LATEST", activeBuffer, "*", limit);
-        }
+        const label = client.state.caps.enabled.has("labeled-response")
+          ? `history-${++historyLabels}`
+          : undefined;
+        this.getControl(server.id).historyRequests.push({ target: nameKey(activeBuffer), label });
+        const [subcommand, anchor] = oldest
+          ? (["BEFORE", `timestamp=${oldest.timestamp.toISOString()}`] as const)
+          : (["LATEST", "*"] as const);
+        requestHistory(client, subcommand, activeBuffer, anchor, limit, label);
         return;
       }
 
@@ -2315,7 +2601,7 @@ export class IrcManager {
 
       default:
         reply(
-          `Unknown command: /${cmd}. Type /help for available commands.`,
+          `/${cmd} is not a command. Type /help to list the commands.`,
           "error",
         );
     }

@@ -7,10 +7,10 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "join", args: "<#channel> [key]", summary: "Join a channel" },
+  { name: "join", args: "<#channel>[,#more] [key]", summary: "Join channels" },
   { name: "part", args: "[reason]", summary: "Leave this channel, or close this DM" },
-  { name: "msg", args: "<nick> [text]", summary: "Open a DM, and send text if given" },
-  { name: "query", args: "<nick> [text]", summary: "Same as /msg" },
+  { name: "msg", args: "<nick|#channel> [text]", summary: "Open a DM, and send text if given" },
+  { name: "query", args: "<nick|#channel> [text]", summary: "Same as /msg" },
   { name: "me", args: "<action>", summary: "Send an action" },
   { name: "nick", args: "<newnick>", summary: "Change your nick" },
   { name: "topic", args: "[text]", summary: "Show or set this channel's topic" },
@@ -32,6 +32,11 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
 /** True if the command can't run without arguments ("/whois" alone only prints its usage). */
 export function needsArgs(cmd: SlashCommand): boolean {
   return cmd.args?.startsWith("<") ?? false;
+}
+
+/** How to type it, as /help and the omnibox show it: "/whois <nick>", "/clear". */
+export function syntax(cmd: SlashCommand): string {
+  return cmd.args ? `/${cmd.name} ${cmd.args}` : `/${cmd.name}`;
 }
 
 export function findSlashCommand(name: string): SlashCommand | undefined {

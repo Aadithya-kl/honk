@@ -3,6 +3,11 @@ import { connect as netConnect, type Socket } from "node:net";
 import { connect as tlsConnect, type ConnectionOptions } from "node:tls";
 import type { Conn } from "irc-client-ts";
 
+import { LineSplitter } from "./ircLine.ts";
+
+/** Called with each line the server sends, without "\r\n", before irc-client-ts reads it. */
+type LineListener = (line: string) => void;
+
 class NodeSocketConn implements Conn {
   private socket: Socket;
   private chunks: Uint8Array[] = [];
@@ -14,11 +19,13 @@ class NodeSocketConn implements Conn {
   private ended = false;
   private error: unknown = null;
 
-  constructor(socket: Socket) {
+  constructor(socket: Socket, onLine: LineListener) {
     this.socket = socket;
+    const lines = new LineSplitter(onLine);
 
     socket.on("data", (chunk: Buffer) => {
       const bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      lines.push(bytes);
       if (this.pendingRead) {
         const req = this.pendingRead;
         this.pendingRead = null;
@@ -108,6 +115,7 @@ function whenConnected(
   socket: Socket,
   connectEvent: "connect" | "secureConnect",
   signal: AbortSignal | undefined,
+  onLine: LineListener,
 ): Promise<Conn> {
   return new Promise((resolve, reject) => {
     const onAbort = () => {
@@ -124,7 +132,7 @@ function whenConnected(
     };
     socket.once(connectEvent, () => {
       cleanup();
-      resolve(new NodeSocketConn(socket));
+      resolve(new NodeSocketConn(socket, onLine));
     });
     socket.once("error", onError);
     if (signal?.aborted) onAbort();
@@ -132,11 +140,14 @@ function whenConnected(
   });
 }
 
-/** A node:net / node:tls runtime for irc-client-ts. Aborting `signal` cancels a pending connect. */
-export function createNodeRuntime(signal?: AbortSignal) {
+/**
+ * A node:net / node:tls runtime for irc-client-ts. Aborting `signal` cancels a pending
+ * connect. `onLine` sees every line from the server first (see IrcManager.onRawLine).
+ */
+export function createNodeRuntime(signal: AbortSignal | undefined, onLine: LineListener) {
   return {
     connect(opts: { hostname: string; port: number }): Promise<Conn> {
-      return whenConnected(netConnect(opts.port, opts.hostname), "connect", signal);
+      return whenConnected(netConnect(opts.port, opts.hostname), "connect", signal, onLine);
     },
 
     connectTls(opts: {
@@ -154,7 +165,7 @@ export function createNodeRuntime(signal?: AbortSignal) {
         ...(opts.cert ? { cert: opts.cert } : {}),
         ...(opts.key ? { key: opts.key } : {}),
       };
-      return whenConnected(tlsConnect(tlsOpts), "secureConnect", signal);
+      return whenConnected(tlsConnect(tlsOpts), "secureConnect", signal, onLine);
     },
 
     ...sharedRuntime,

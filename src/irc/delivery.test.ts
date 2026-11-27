@@ -142,4 +142,15 @@ describe("DeliveryTracker", () => {
     expect(timedOut).toEqual([]);
     expect(timers.active()).toBe(0);
   });
+
+  test("reject takes the oldest waiting line to that buffer, and its PONG no longer confirms it", () => {
+    const { tracker, delivered, send } = setup();
+    send("libera", "1", "#quiet");
+    send("libera", "2", "#honk");
+    send("libera", "3", "#quiet");
+    expect(tracker.reject("libera", "#QUIET")).toEqual(line("1", "#quiet"));
+    tracker.pong("libera", "honk-3");
+    expect(delivered).toEqual([["libera", [line("2"), line("3", "#quiet")]]]);
+    expect(tracker.reject("libera", "#quiet")).toBeUndefined();
+  });
 });

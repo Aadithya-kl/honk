@@ -11,9 +11,17 @@ export function bufferKindFor(name: string): BufferKind {
   return isChannelName(name) ? "channel" : "dm";
 }
 
-/** Case-insensitive nick comparison. The one place to add IRC casemapping later. */
+/**
+ * A nick or channel name folded for case-insensitive lookup, for use as a map key.
+ * The one place to add IRC casemapping later.
+ */
+export function nameKey(name: string): string {
+  return name.toLowerCase();
+}
+
+/** Case-insensitive nick comparison. See nameKey. */
 export function sameNick(a: string | undefined, b: string | undefined): boolean {
-  return a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
+  return a !== undefined && b !== undefined && nameKey(a) === nameKey(b);
 }
 
 /** Strips `!user` if a bouncer/server omits `@host` (e.g. `goose!goose` -> `goose`). */

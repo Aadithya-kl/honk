@@ -14,6 +14,8 @@
  * server, with or without IRCv3 echo-message.
  */
 
+import { sameNick } from "./names.ts";
+
 /** How long to wait for the PONG. Long enough for a slow link, short enough to notice a dead one. */
 export const DELIVERY_TIMEOUT_MS = 15_000;
 
@@ -108,6 +110,21 @@ export class DeliveryTracker {
     this.setPending(serverId, probes.filter((p) => p.seq > seq));
     const lines = linesOf(done);
     if (lines.length > 0) this.callbacks.delivered(serverId, lines);
+  }
+
+  /**
+   * The server refused a line to `bufferName` (such as 404 "Cannot send to channel").
+   * It answers in order, so the refusal is for the oldest line to that buffer still
+   * waiting. Returns that line and stops tracking it, so the PONG after it can't mark
+   * it delivered. Its PING stays, to keep confirming the lines around it.
+   */
+  reject(serverId: string, bufferName: string): SentLine | undefined {
+    const probe = this.pending
+      .get(serverId)
+      ?.find((p) => sameNick(p.line?.bufferName, bufferName));
+    const line = probe?.line;
+    if (probe) probe.line = undefined;
+    return line;
   }
 
   /**

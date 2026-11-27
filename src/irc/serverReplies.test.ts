@@ -1,0 +1,277 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { FakeIrcd } from "../../dev/fakeircd/server.ts";
+import { until } from "../../dev/fakeircd/testing.ts";
+import { IrcManager } from "./manager.ts";
+
+let irc: FakeIrcd;
+let m: IrcManager;
+
+const server = () => m.getSnapshot().servers.find((s) => s.id === "alpha")!;
+const texts = (buffer: string) =>
+  server()
+    .buffers[buffer]?.messages.filter((x) => !x.isHistory)
+    .map((x) => x.text) ?? [];
+const allTexts = () => Object.keys(server().buffers).flatMap(texts);
+
+async function connect(extra: { password?: string } = {}): Promise<void> {
+  m.addServer({
+    id: "alpha",
+    name: "alpha",
+    host: "127.0.0.1",
+    port: irc.port,
+    tls: false,
+    nick: "goose",
+    channels: ["#honk"],
+    autoConnect: false,
+    ...extra,
+  });
+  await m.connectServer("alpha");
+}
+
+beforeEach(async () => {
+  irc = await FakeIrcd.start({ network: "alpha" });
+  m = new IrcManager();
+});
+
+afterEach(async () => {
+  m.disconnectAll();
+  await irc.stop();
+});
+
+async function inHonk(): Promise<void> {
+  await connect();
+  await until(() => Boolean(server().buffers["#honk"]));
+  m.setActive("alpha", "#honk");
+}
+
+test("a failed join is said in words, without the raw numeric name", async () => {
+  await inHonk();
+  irc.ban("#secret");
+  m.handleInput("/join #secret");
+  await until(() => texts("#honk").some((t) => t.includes("#secret")));
+  expect(texts("#honk").at(-1)).toBe("Can't join #secret: you are banned from it.");
+  expect(allTexts().some((t) => t.includes("err_"))).toBe(false);
+});
+
+test("a forwarded join says where it went and moves there", async () => {
+  await inHonk();
+  irc.forward("#old", "#new");
+  m.handleInput("/join #old");
+  await until(() => m.getSnapshot().active?.buffer === "#new");
+  expect(texts("#honk")).toContain("#old forwards to #new, so you are joining #new instead.");
+});
+
+test("someone away is said once in the DM, not on every message", async () => {
+  await inHonk();
+  irc.setAway("alice", "Gone fishing");
+  m.handleInput("/msg alice one");
+  await until(() => texts("alice").includes("alice is away: Gone fishing"));
+  m.handleInput("/msg alice two");
+  await until(() => irc.received.some((l) => l.command === "PRIVMSG" && l.params[1] === "two"));
+  await Bun.sleep(100);
+  expect(texts("alice").filter((t) => t.includes("is away"))).toHaveLength(1);
+});
+
+test("WHOIS shows one fact per line, with the away text once", async () => {
+  await inHonk();
+  irc.setAway("alice", "Gone fishing");
+  m.handleInput("/whois alice");
+  await until(() => texts("#honk").some((t) => t.startsWith("alice is on")));
+  const lines = texts("#honk").filter((t) => t.startsWith("alice "));
+  expect(lines).toEqual([
+    "alice is ~alice@fake.host (alice the fake user)",
+    "alice is in @#honk",
+    "alice is on fake.irc (alpha)",
+    "alice is away: Gone fishing",
+  ]);
+});
+
+test("/history with nothing older says so", async () => {
+  await inHonk();
+  m.handleInput("/history 5");
+  await until(() => texts("#honk").some((t) => t.includes("no older messages")));
+  expect(texts("#honk").at(-1)).toBe("The server has no older messages in #honk.");
+});
+
+test("a rejected SASL login is one line that says what to do", async () => {
+  irc.rejectSasl = true;
+  await connect({ password: "wrong" });
+  await until(() => server().status === "error");
+  await Bun.sleep(100);
+  const errors = server().buffers["*status"]!.messages.filter((x) => x.kind === "error");
+  expect(errors.map((x) => x.text)).toEqual([
+    "Login failed: the server rejected the account name or password. honk stopped reconnecting. Check the account and password in your config, then type /connect.",
+  ]);
+});
+
+test("commands offline say how to reconnect", async () => {
+  await inHonk();
+  m.handleInput("/disconnect");
+  await until(() => server().status === "disconnected");
+  m.handleInput("/join #x");
+  await until(() => texts("#honk").some((t) => t.startsWith("Not connected")));
+  expect(texts("#honk").at(-1)).toBe("Not connected to alpha. Type /connect to reconnect.");
+});
+
+test("/part and /me in *status say where they work", async () => {
+  await inHonk();
+  m.setActive("alpha", "*status");
+  m.handleInput("/part");
+  m.handleInput("/me waves");
+  await until(() => texts("*status").some((t) => t.startsWith("Use /me")));
+  expect(texts("*status").slice(-2)).toEqual([
+    "Use /part inside a channel or DM.",
+    "Use /me inside a channel or DM.",
+  ]);
+});
+
+test("a message the server refuses is marked not sent, even after the PONG", async () => {
+  await inHonk();
+  irc.join("dave", "#other"); // a channel goose is not in: the fake server answers 404
+  m.handleInput("/msg #other hello");
+  await until(() => texts("#other").includes("Your message was not sent to #other."));
+  await Bun.sleep(200); // the PONG for the PING after the line arrives too
+  const sent = server().buffers["#other"]!.messages.find((x) => x.text === "hello");
+  expect(sent?.delivery).toBe("failed");
+});
+
+test("a nick error stays where you are, not in a DM with that nick", async () => {
+  await inHonk();
+  irc.join("alice", "#honk");
+  m.openDm("alpha", "alice");
+  m.setActive("alpha", "#honk");
+  m.handleInput("/nick alice");
+  await until(() => texts("#honk").includes("The nick alice is taken."));
+  expect(texts("alice").some((t) => t.includes("taken"))).toBe(false);
+});
+
+test("a SASL login that works says which account", async () => {
+  await connect({ password: "right" });
+  await until(() => texts("*status").some((t) => t.startsWith("Logged in")));
+  expect(texts("*status")).toContain("Logged in to the account goose.");
+});
+
+test("/history sends a label, and a FAIL for one channel leaves another /history waiting", async () => {
+  await inHonk();
+  m.handleInput("/join #other");
+  await until(() => Boolean(server().buffers["#other"]));
+  irc.failHistoryIn.add("#other");
+  // Both requests leave before any reply comes back. The FAIL for #other arrives first.
+  m.setActive("alpha", "#other");
+  m.handleInput("/history 5");
+  m.setActive("alpha", "#honk");
+  m.handleInput("/history 5");
+  await until(() => texts("#honk").some((t) => t.includes("no older messages")));
+  expect(texts("#honk").at(-1)).toBe("The server has no older messages in #honk.");
+  const sent = irc.received.filter((l) => l.command === "CHATHISTORY" && l.params[0] === "LATEST");
+  expect(sent.slice(-2).every((l) => l.raw.startsWith("@label="))).toBe(true);
+});
+
+test("history plays back without HistServ lines (draft/event-playback)", async () => {
+  irc.join("dave", "#honk"); // a JOIN in the history, as Ergo keeps it
+  irc.say("dave", "#honk", "hello from before");
+  await connect();
+  await until(() => server().buffers["#honk"]?.messages.some((x) => x.isHistory) ?? false);
+  const req = irc.received.find((l) => l.command === "CAP" && l.params[0] === "REQ");
+  expect(req?.params[1]?.split(" ")).toContain("draft/event-playback");
+  const history = server().buffers["#honk"]!.messages.filter((x) => x.isHistory);
+  expect(history.map((x) => `${x.from}: ${x.text}`)).toEqual(["dave: hello from before"]);
+});
+
+test("someone away with no away text is said once too", async () => {
+  await inHonk();
+  irc.join("alice", "#honk");
+  m.openDm("alpha", "alice");
+  m.setActive("alpha", "#honk");
+  for (const _ of [1, 2]) {
+    irc.sendRaw(":fake.irc 301 $NICK alice");
+    await until(() => texts("alice").includes("alice is away."));
+  }
+  await Bun.sleep(100);
+  expect(texts("alice").filter((t) => t.startsWith("alice is away"))).toEqual(["alice is away."]);
+});
+
+test.each([true, false])(
+  "a /history the server failed is not answered by a later history batch (labeled-response: %p)",
+  async (labeledResponse) => {
+    irc.labeledResponse = labeledResponse;
+    await inHonk();
+    irc.failHistory = true;
+    m.handleInput("/history 5");
+    await until(() => texts("#honk").some((t) => t.startsWith("Could not load history")));
+    irc.failHistory = false;
+    // A rejoin on the same connection asks for history on its own, and finds nothing older.
+    // Its batch must not be taken as the reply to the /history that failed.
+    m.handleInput("/part #honk");
+    await until(() => !server().buffers["#honk"]);
+    m.handleInput("/join #honk");
+    await until(() => irc.received.filter((l) => l.command === "CHATHISTORY").length >= 3);
+    await Bun.sleep(100);
+    expect(texts("#honk").some((t) => t.includes("no older messages"))).toBe(false);
+  },
+);
+
+test("a WHOIS cut off by a dropped connection does not hide later away replies", async () => {
+  await inHonk();
+  m.openDm("alpha", "alice");
+  m.setActive("alpha", "#honk");
+  // The WHOIS starts (311) but the connection drops before it ends (318).
+  irc.sendRaw(":fake.irc 311 $NICK alice ~alice fake.host * :alice the fake user");
+  await Bun.sleep(100);
+  m.handleInput("/disconnect");
+  await until(() => server().status === "disconnected");
+  m.handleInput("/connect");
+  await until(() => server().status === "connected");
+  irc.sendRaw(":fake.irc 301 $NICK alice :Gone fishing");
+  await until(() => texts("alice").includes("alice is away: Gone fishing"));
+});
+
+test("someone away is said again after they write, even with the same text", async () => {
+  await inHonk();
+  m.openDm("alpha", "alice");
+  m.setActive("alpha", "#honk");
+  irc.sendRaw(":fake.irc 301 $NICK alice :lunch");
+  await until(() => texts("alice").includes("alice is away: lunch"));
+  irc.sendRaw(":alice!~alice@fake.host PRIVMSG $NICK :back");
+  await until(() => texts("alice").includes("back"));
+  irc.sendRaw(":fake.irc 301 $NICK alice :lunch");
+  await until(() => texts("alice").filter((t) => t === "alice is away: lunch").length === 2);
+});
+
+test("someone away is said again after a reconnect, even with the same text", async () => {
+  await inHonk();
+  m.openDm("alpha", "alice");
+  m.setActive("alpha", "#honk");
+  irc.sendRaw(":fake.irc 301 $NICK alice :lunch");
+  await until(() => texts("alice").includes("alice is away: lunch"));
+  m.handleInput("/disconnect");
+  await until(() => server().status === "disconnected");
+  m.handleInput("/connect");
+  await until(() => server().status === "connected");
+  irc.sendRaw(":fake.irc 301 $NICK alice :lunch");
+  await until(() => texts("alice").filter((t) => t === "alice is away: lunch").length === 2);
+});
+
+test("a nick in use at login is retried with an underscore", async () => {
+  irc.join("goose", "#elsewhere");
+  await connect();
+  await until(() => server().status === "connected");
+  expect(server().nick).toBe("goose_");
+  expect(allTexts().some((t) => t.includes("err_") || t.includes("433"))).toBe(false);
+});
+
+test("a nick the network holds (437) at login is retried like one in use", async () => {
+  irc.holdNick("goose");
+  await connect();
+  await until(() => server().status === "connected");
+  expect(server().nick).toBe("goose_");
+  expect(allTexts().some((t) => t.includes("err_") || t.includes("437"))).toBe(false);
+});
+
+test("717 (they were told you wrote) is an ordinary line, not an error", async () => {
+  await inHonk();
+  irc.sendRaw(":fake.server 717 $NICK alice :has been informed that you messaged them");
+  await until(() => texts("#honk").includes("alice was told that you wrote."));
+  const line = server().buffers["#honk"]!.messages.find((x) => x.text === "alice was told that you wrote.");
+  expect(line?.kind).toBe("system");
+});

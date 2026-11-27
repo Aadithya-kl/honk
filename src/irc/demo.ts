@@ -5,6 +5,7 @@
  * This file is only data. IrcManager turns it into buffers and plays the timeline.
  */
 import type { MessageKind } from "../types.ts";
+import type { WhoisInfo } from "./replies.ts";
 
 export const DEMO_NICK = "goose";
 
@@ -218,14 +219,13 @@ export const DEMO_REPLIES = [
   "+1",
 ];
 
-/** WHOIS lines for a demo nick. */
-export function demoWhois(nick: string): string[] {
-  return [
-    `${nick} is ${nick.toLowerCase()}@user/${nick.toLowerCase()} (${nick})`,
-    `${nick} is logged in as ${nick.toLowerCase()}`,
-    `${nick} is connected via irc.libera.chat (TLS)`,
-    `${nick} has been idle for 2 minutes`,
-  ];
+/**
+ * A made-up WHOIS reply for a demo nick, who is in `channels` (with mode prefixes, such
+ * as "@#honk") on `server`. whoisLines words it, as it does a real reply.
+ */
+export function demoWhois(nick: string, server: string, channels: string[]): WhoisInfo {
+  const user = nick.toLowerCase();
+  return { nick, username: `~${user}`, host: `user/${user}`, channels, server, idle: 120 };
 }
 
 /** Older lines that /history "loads" in the demo. */
