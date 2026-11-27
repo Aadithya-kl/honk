@@ -8,6 +8,7 @@ import { linkOpener } from "../openUrl.ts";
 import { Clickable, isPlainClick, LinkArea, NameText, type NameActions } from "./Clickable.tsx";
 import { getCompletions } from "./completion.ts";
 import { cellWidth, HEADER_HEIGHT, scrollboxStyle, truncate } from "./display.ts";
+import { dayLabelBefore } from "./dayDivider.ts";
 import { FormattedText, LinkedText, parseIrcText, Segments, underlineRange } from "./format.tsx";
 
 interface ChatPaneProps {
@@ -59,21 +60,32 @@ function shortNick(nick: string): string {
 }
 
 /**
- * A red rule with " new " in the middle. Each half holds a full pane width of
- * dashes, and flex layout clips them, so the rule fits whatever width the feed
- * has, with or without its scrollbar. Each half keeps at least one dash.
+ * A rule with a label in the middle, such as " new ". Each half holds a full
+ * pane width of dashes, and flex layout clips them, so the rule fits whatever
+ * width the feed has, with or without its scrollbar. Each half keeps at least
+ * one dash.
  */
-function UnreadDivider({ paneWidth }: { paneWidth: number }) {
+function Divider({
+  label,
+  color,
+  paneWidth,
+  marginBottom = 1,
+}: {
+  label: string;
+  color: string;
+  paneWidth: number;
+  marginBottom?: number;
+}) {
   const half = (
-    <text flexGrow={1} flexShrink={1} flexBasis={0} minWidth={1} wrapMode="none" fg={theme.red}>
+    <text flexGrow={1} flexShrink={1} flexBasis={0} minWidth={1} wrapMode="none" fg={color}>
       {"─".repeat(Math.max(1, paneWidth))}
     </text>
   );
   return (
-    <box flexDirection="row" paddingLeft={1} paddingRight={1} marginTop={1} marginBottom={1}>
+    <box flexDirection="row" paddingLeft={1} paddingRight={1} marginTop={1} marginBottom={marginBottom}>
       {half}
-      <text flexShrink={0} fg={theme.red}>
-        <strong>{" new "}</strong>
+      <text flexShrink={0} fg={color}>
+        <strong>{` ${label} `}</strong>
       </text>
       {half}
     </box>
@@ -472,6 +484,9 @@ export function ChatPane({
     scrollRef.current?.scrollTo(scrollRef.current.scrollHeight);
   };
 
+  /** Decides whether the first line of the buffer gets a day divider: only when it is not from today. */
+  const now = new Date();
+
   return (
     // Links anywhere in the pane open with a click: the topic and the messages.
     <LinkArea
@@ -528,8 +543,10 @@ export function ChatPane({
           {buffer?.messages.map((msg, idx) => {
             const showDivider = msg.id === buffer.firstUnreadId;
             const prev = idx > 0 ? buffer.messages[idx - 1] : undefined;
+            const day = dayLabelBefore(prev, msg, now);
             const grouped =
               !showDivider &&
+              day === null &&
               msg.kind === "message" &&
               prev?.kind === "message" &&
               sameNick(prev.from, msg.from) &&
@@ -537,7 +554,15 @@ export function ChatPane({
 
             return (
               <box key={msg.id} flexDirection="column" width="100%">
-                {showDivider && <UnreadDivider paneWidth={paneWidth} />}
+                {day !== null && (
+                  <Divider
+                    label={day}
+                    color={theme.fgMuted}
+                    paneWidth={paneWidth}
+                    marginBottom={showDivider ? 0 : 1}
+                  />
+                )}
+                {showDivider && <Divider label="new" color={theme.red} paneWidth={paneWidth} />}
                 <MessageRow
                   msg={msg}
                   grouped={grouped}
