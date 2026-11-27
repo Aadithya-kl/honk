@@ -61,11 +61,23 @@ function parseArgs(argv: string[]) {
   return flags;
 }
 
+/** A config file honk can't use. The message names the file and says what is wrong. */
+export class ConfigError extends Error {}
+
 function readConfigFile(path: string): AppConfig | null {
   if (!existsSync(path)) return null;
   const raw = readFileSync(path, "utf-8");
-  const parsed = JSON.parse(raw) as Partial<AppConfig>;
-  const notifications = parsed.notifications !== false;
+  let parsed: Partial<AppConfig>;
+  try {
+    parsed = JSON.parse(raw) as Partial<AppConfig>;
+  } catch (err) {
+    const reason = (err as Error).message.replace(/^JSON Parse error: /, "");
+    throw new ConfigError(`${path} is not valid JSON: ${reason}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new ConfigError(`${path} must hold a JSON object, such as {"servers": [...]}`);
+  }
+  const notifications = parsed.notifications ?? true;
   const theme = typeof parsed.theme === "string" ? parsed.theme : undefined;
   if (!Array.isArray(parsed.servers)) return { servers: [], notifications, theme };
   return {

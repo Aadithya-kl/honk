@@ -2,7 +2,7 @@ import { createCliRenderer, type CliRenderer } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { App } from "./App.tsx";
 import { cliAction, HELP, unknownCommandText } from "./cli.ts";
-import { defaultConfigPath, loadConfig, saveThemeSetting } from "./config.ts";
+import { ConfigError, defaultConfigPath, loadConfig, saveThemeSetting } from "./config.ts";
 import { IrcManager } from "./irc/manager.ts";
 import { Notifier } from "./notify.ts";
 import { applyTheme } from "./theme.ts";
@@ -43,8 +43,19 @@ interface HotState {
 
 const g = globalThis as unknown as { __ircHot?: HotState };
 
+/** The config, or a one-line error and exit 1 for a file honk can't use. */
+function loadConfigOrExit(): ReturnType<typeof loadConfig> {
+  try {
+    return loadConfig();
+  } catch (err) {
+    if (!(err instanceof ConfigError)) throw err;
+    console.error(`honk: ${err.message}`);
+    process.exit(1);
+  }
+}
+
 if (!g.__ircHot) {
-  const config = loadConfig();
+  const config = loadConfigOrExit();
   const manager = new IrcManager();
 
   if (process.argv.includes("--demo")) {

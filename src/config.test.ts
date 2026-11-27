@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, saveThemeSetting, setThemeInConfigText } from "./config.ts";
+import { ConfigError, loadConfig, saveThemeSetting, setThemeInConfigText } from "./config.ts";
 
 describe("setThemeInConfigText", () => {
   test("replaces an existing theme and keeps the rest of the text", () => {
@@ -103,5 +103,34 @@ describe("saveThemeSetting", () => {
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+});
+
+describe("loadConfig with a broken file", () => {
+  /** Runs loadConfig on a config file holding `text`, and returns what it throws. */
+  function loadError(text: string): unknown {
+    const dir = mkdtempSync(join(tmpdir(), "honk-config-"));
+    try {
+      const path = join(dir, "honk.json");
+      writeFileSync(path, text);
+      loadConfig(["--config", path]);
+      return undefined;
+    } catch (err) {
+      return err;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("broken JSON is a ConfigError that names the file, not a stack trace", () => {
+    const err = loadError('{"servers": [ {"host": "x",, } ]}');
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as Error).message).toMatch(/honk\.json is not valid JSON: \S/);
+  });
+
+  test("JSON that is not an object is a ConfigError", () => {
+    const err = loadError("[1, 2]");
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as Error).message).toEndWith('must hold a JSON object, such as {"servers": [...]}');
   });
 });
