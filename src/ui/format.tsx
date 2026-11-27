@@ -243,14 +243,19 @@ export function FormattedText({
   return <Segments segments={segments} defaultFg={defaultFg} forceItalic={forceItalic} />;
 }
 
+/** `text` without mIRC formatting codes, split into plain runs and URLs. For LinkedText. */
+export function plainSegments(text: string): { text: string; href?: string }[] {
+  return parseIrcText(text).map(({ text, href }) => (href ? { text, href } : { text }));
+}
+
 /**
- * Plain text in one color, with its URLs as links. Unlike FormattedText, it
- * does not read mIRC formatting codes. For system lines, such as honk's own
- * notices and the MOTD, which were always shown as plain text.
+ * Plain text in one color, with its URLs as links. For system lines, such as honk's
+ * own notices and the MOTD. mIRC formatting codes are removed, not shown: a MOTD with
+ * "\x034red" shows "red", not "4red".
  */
 export function LinkedText({ text, fg }: { text: string; fg: string }) {
   const themeVersion = useThemeVersion();
-  const segments = useMemo(() => splitSegmentUrls({ text }), [text, themeVersion]);
+  const segments = useMemo(() => plainSegments(text), [text, themeVersion]);
   return <Segments segments={segments} defaultFg={fg} forceItalic={false} />;
 }
 
