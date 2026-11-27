@@ -65,24 +65,14 @@ function shortNick(nick: string): string {
  * width the feed has, with or without its scrollbar. Each half keeps at least
  * one dash.
  */
-function Divider({
-  label,
-  color,
-  paneWidth,
-  marginBottom = 1,
-}: {
-  label: string;
-  color: string;
-  paneWidth: number;
-  marginBottom?: number;
-}) {
+function Divider({ label, color, paneWidth }: { label: string; color: string; paneWidth: number }) {
   const half = (
     <text flexGrow={1} flexShrink={1} flexBasis={0} minWidth={1} wrapMode="none" fg={color}>
       {"─".repeat(Math.max(1, paneWidth))}
     </text>
   );
   return (
-    <box flexDirection="row" paddingLeft={1} paddingRight={1} marginTop={1} marginBottom={marginBottom}>
+    <box flexDirection="row" paddingLeft={1} paddingRight={1}>
       {half}
       <text flexShrink={0} fg={color}>
         <strong>{` ${label} `}</strong>
@@ -484,7 +474,6 @@ export function ChatPane({
     scrollRef.current?.scrollTo(scrollRef.current.scrollHeight);
   };
 
-  /** Decides whether the first line of the buffer gets a day divider: only when it is not from today. */
   const now = new Date();
 
   return (
@@ -541,11 +530,11 @@ export function ChatPane({
         {/* No top padding: the header's own bottom padding is the gap. */}
         <box flexDirection="column" paddingBottom={1}>
           {buffer?.messages.map((msg, idx) => {
-            const showDivider = msg.id === buffer.firstUnreadId;
+            const isFirstUnread = msg.id === buffer.firstUnreadId;
             const prev = idx > 0 ? buffer.messages[idx - 1] : undefined;
-            const day = dayLabelBefore(prev, msg, now);
+            const day = dayLabelBefore(prev?.timestamp, msg.timestamp, now);
             const grouped =
-              !showDivider &&
+              !isFirstUnread &&
               day === null &&
               msg.kind === "message" &&
               prev?.kind === "message" &&
@@ -554,15 +543,13 @@ export function ChatPane({
 
             return (
               <box key={msg.id} flexDirection="column" width="100%">
-                {day !== null && (
-                  <Divider
-                    label={day}
-                    color={theme.fgMuted}
-                    paneWidth={paneWidth}
-                    marginBottom={showDivider ? 0 : 1}
-                  />
+                {(day !== null || isFirstUnread) && (
+                  /* The day goes first, then "new". A blank line above and below the pair. */
+                  <box flexDirection="column" marginTop={1} marginBottom={1}>
+                    {day !== null && <Divider label={day} color={theme.fgMuted} paneWidth={paneWidth} />}
+                    {isFirstUnread && <Divider label="new" color={theme.red} paneWidth={paneWidth} />}
+                  </box>
                 )}
-                {showDivider && <Divider label="new" color={theme.red} paneWidth={paneWidth} />}
                 <MessageRow
                   msg={msg}
                   grouped={grouped}

@@ -4,6 +4,7 @@ import { act, useState } from "react";
 import { TextAttributes, type MousePointerStyle } from "@opentui/core";
 import type { BufferState, ChatMessage, ServerState } from "../types.ts";
 import { ChatPane } from "./ChatPane.tsx";
+import { dayLabel } from "./dayDivider.ts";
 
 /** Noon today, so the buffer starts on today and gets no day divider. */
 function noonToday(): Date {
@@ -123,7 +124,7 @@ for (const count of [3, 60]) {
 test("a day divider goes above the first line of each day, and above the new divider", async () => {
   const today = noonToday();
   const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1, 23, 59);
-  const label = (d: Date) => d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  const label = (d: Date) => dayLabel(d, today);
   const screen = await renderLines(
     {
       messages: [

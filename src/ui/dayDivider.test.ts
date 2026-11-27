@@ -1,31 +1,26 @@
 import { expect, test } from "bun:test";
-import type { ChatMessage } from "../types.ts";
 import { dayLabel, dayLabelBefore } from "./dayDivider.ts";
-
-function at(timestamp: Date): ChatMessage {
-  return { id: String(timestamp.getTime()), timestamp, kind: "message", from: "fern", text: "hi" };
-}
 
 const NOW = new Date(2026, 10, 27, 15, 0);
 const thursday = dayLabel(new Date(2026, 10, 26, 12, 0), NOW);
 const friday = dayLabel(new Date(2026, 10, 27, 12, 0), NOW);
 
 test("no divider between two messages on the same day", () => {
-  const prev = at(new Date(2026, 10, 26, 0, 1));
-  expect(dayLabelBefore(prev, at(new Date(2026, 10, 26, 23, 59)), NOW)).toBeNull();
+  const prev = new Date(2026, 10, 26, 0, 1);
+  expect(dayLabelBefore(prev, new Date(2026, 10, 26, 23, 59), NOW)).toBeNull();
 });
 
 test("a divider between 23:59 and 00:01", () => {
-  const prev = at(new Date(2026, 10, 26, 23, 59));
-  expect(dayLabelBefore(prev, at(new Date(2026, 10, 27, 0, 1)), NOW)).toBe(friday);
+  const prev = new Date(2026, 10, 26, 23, 59);
+  expect(dayLabelBefore(prev, new Date(2026, 10, 27, 0, 1), NOW)).toBe(friday);
 });
 
 test("a divider above a first message from another day", () => {
-  expect(dayLabelBefore(undefined, at(new Date(2026, 10, 26, 9, 14)), NOW)).toBe(thursday);
+  expect(dayLabelBefore(undefined, new Date(2026, 10, 26, 9, 14), NOW)).toBe(thursday);
 });
 
 test("no divider above a first message from today", () => {
-  expect(dayLabelBefore(undefined, at(new Date(2026, 10, 27, 0, 0)), NOW)).toBeNull();
+  expect(dayLabelBefore(undefined, new Date(2026, 10, 27, 0, 0), NOW)).toBeNull();
 });
 
 test("the label names the weekday, month and day, and the year only for another year", () => {
@@ -48,6 +43,6 @@ test("a change to or from summer time adds no divider", () => {
   for (const day of days) {
     const morning = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, 30);
     const evening = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 23, 30);
-    expect(dayLabelBefore(at(morning), at(evening), NOW)).toBeNull();
+    expect(dayLabelBefore(morning, evening, NOW)).toBeNull();
   }
 });
