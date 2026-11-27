@@ -4,7 +4,14 @@ import { MouseButtons } from "@opentui/core/testing";
 import { useRenderer } from "@opentui/react";
 import { act, useState } from "react";
 import { testRender } from "@opentui/react/test-utils";
-import { Clickable, isPlainClick, LinkArea, PointerTracker } from "./Clickable.tsx";
+import {
+  Clickable,
+  isPlainClick,
+  LinkArea,
+  NameText,
+  PointerTracker,
+  type NameActions,
+} from "./Clickable.tsx";
 
 function track() {
   const shapes: MousePointerStyle[] = [];
@@ -223,6 +230,84 @@ describe("LinkArea", () => {
     renderer.emit("focus");
     await click(mockMouse, 6, 0);
     expect(opened).toEqual([]);
+    await act(() => dispose());
+  });
+});
+
+describe("NameText", () => {
+  // A click waits this long for a second one before it opens the name.
+  const DOUBLE_CLICK_MS = 100;
+  const names = (opened: string[]): NameActions => ({
+    findNick: (word) => (word === "bob" ? "bob" : undefined),
+    openNick: (nick) => opened.push(`dm ${nick}`),
+    openChannel: (channel) => opened.push(`join ${channel}`),
+  });
+
+  test("a name that moved under the mouse after the press does not open", async () => {
+    // New lines scroll the feed: the press was on plain text, the release is on a channel name.
+    const opened: string[] = [];
+    let setText: (text: string) => void = () => {};
+    function Line() {
+      const [text, set] = useState("plain text");
+      setText = set;
+      return (
+        <NameText names={names(opened)} namesEnd={text.length} doubleClickMs={DOUBLE_CLICK_MS}>
+          {() => text}
+        </NameText>
+      );
+    }
+    const { mockMouse, renderOnce, dispose } = await testRender(<Line />, { width: 30, height: 3 });
+    await renderOnce();
+    await act(() => mockMouse.pressDown(2, 0));
+    await act(async () => setText("#evil"));
+    await renderOnce();
+    await act(() => mockMouse.release(2, 0));
+    await Bun.sleep(DOUBLE_CLICK_MS * 3);
+    expect(opened).toEqual([]);
+    await act(() => dispose());
+  });
+
+  test("a double-click on a name, to select it, does not open it", async () => {
+    const opened: string[] = [];
+    const { mockMouse, renderOnce, dispose } = await testRender(
+      <NameText names={names(opened)} namesEnd={9} doubleClickMs={DOUBLE_CLICK_MS}>
+        {() => "bob #rust"}
+      </NameText>,
+      { width: 30, height: 3 },
+    );
+    await renderOnce();
+    await act(() => mockMouse.doubleClick(6, 0, MouseButtons.LEFT, { delayMs: 1 }));
+    await Bun.sleep(DOUBLE_CLICK_MS * 3);
+    expect(opened).toEqual([]);
+    // A later single click still opens it, after the wait.
+    await Bun.sleep(600);
+    await act(() => mockMouse.click(6, 0));
+    expect(opened).toEqual([]);
+    await Bun.sleep(DOUBLE_CLICK_MS * 3);
+    expect(opened).toEqual(["join #rust"]);
+    await act(() => dispose());
+  });
+
+  test("the click that focuses the terminal window does not open a name", async () => {
+    const opened: string[] = [];
+    const { mockMouse, renderOnce, renderer, dispose } = await testRender(
+      <NameText names={names(opened)} namesEnd={9} doubleClickMs={DOUBLE_CLICK_MS}>
+        {() => "bob #rust"}
+      </NameText>,
+      { width: 30, height: 3 },
+    );
+    await renderOnce();
+    renderer.emit("focus");
+    await act(() => mockMouse.click(1, 0));
+    expect(opened).toEqual([]);
+    await act(() => mockMouse.click(6, 0)); // still within the focus guard
+    expect(opened).toEqual([]);
+    await Bun.sleep(550);
+    await act(() => mockMouse.click(1, 0));
+    await Bun.sleep(DOUBLE_CLICK_MS * 3);
+    await act(() => mockMouse.click(6, 0));
+    await Bun.sleep(DOUBLE_CLICK_MS * 3);
+    expect(opened).toEqual(["dm bob", "join #rust"]);
     await act(() => dispose());
   });
 });
