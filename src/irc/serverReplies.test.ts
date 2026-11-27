@@ -400,6 +400,42 @@ test("a line honk cannot handle is shown once in *status, and the connection goe
   expect(texts(STATUS_BUFFER)).toContain("trigger");
 });
 
+test("an event listener that throws is shown once in *status, and the connection goes on", async () => {
+  await inHonk();
+  // Make the privmsg listener throw on one text, like a bug would. irc-client-ts calls
+  // it from its read loop, which would end without the guard.
+  const raw = m as unknown as { pushMessage(serverId: string, buffer: string, msg: { text: string }): void };
+  const pushMessage = raw.pushMessage.bind(m);
+  raw.pushMessage = (serverId, buffer, msg) => {
+    if (msg.text.startsWith("trigger")) throw new Error("cannot show it");
+    pushMessage(serverId, buffer, msg);
+  };
+
+  irc.sendRaw(":alice!a@host PRIVMSG #honk :trigger");
+  irc.sendRaw(":alice!a@host PRIVMSG #honk :trigger again");
+  irc.sendRaw(":alice!a@host PRIVMSG #honk :still connected");
+  await until(() => texts("#honk").includes("still connected"));
+  const reports = texts(STATUS_BUFFER).filter((t) => t.startsWith("A bug in honk:"));
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toStartWith("A bug in honk: it could not handle the privmsg:channel event (cannot show it, at ");
+});
+
+test("a library listener that throws is shown in *status, and the connection goes on", async () => {
+  await inHonk();
+  // A listener that honk did not add, as one of irc-client-ts's plugins adds it.
+  const clients = (m as unknown as { clients: Map<string, { on(e: string, l: (p: { params: string[] }) => void): void }> }).clients;
+  clients.get("alpha")!.on("raw:privmsg", (msg) => {
+    if (msg.params[1] === "trigger") throw new Error("plugin broke");
+  });
+
+  irc.sendRaw(":alice!a@host PRIVMSG #honk :trigger");
+  irc.sendRaw(":alice!a@host PRIVMSG #honk :still connected");
+  await until(() => texts("#honk").includes("still connected"));
+  const reports = texts(STATUS_BUFFER).filter((t) => t.startsWith("A bug in honk:"));
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toStartWith("A bug in honk: it could not handle the raw:privmsg event (plugin broke, at ");
+});
+
 test("a bug that hits many lines is reported 5 times at most", async () => {
   await inHonk();
   const raw = m as unknown as { onRawLine(serverId: string, line: string): void };

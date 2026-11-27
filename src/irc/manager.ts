@@ -66,7 +66,7 @@ import {
   READ_MARKER_CAP,
   unreadAfter,
 } from "./readMarker.ts";
-import { createNodeRuntime, describeLineError } from "./runtime.ts";
+import { createNodeRuntime, describeEventError, describeLineError, neverThrow } from "./runtime.ts";
 
 /** Messages kept per buffer from live traffic. */
 const MAX_MESSAGES = 500;
@@ -74,8 +74,11 @@ const MAX_MESSAGES = 500;
 const MAX_MESSAGES_WITH_HISTORY = 5000;
 /** A paste with more lines than this is refused, so a wrong paste can't flood a channel. */
 const MAX_PASTE_LINES = 10;
-/** Reports of a bug in honk's line handling, per connection. See createNodeRuntime. */
-const MAX_LINE_ERROR_REPORTS = 5;
+/**
+ * Reports of a bug in honk per connection: in its line handling (see createNodeRuntime)
+ * or in an event listener (see bindClientEvents).
+ */
+const MAX_BUG_REPORTS = 5;
 
 /** In the demo: how long someone takes to answer you, and the gap between ambient lines. */
 const DEMO_REPLY_DELAY_MS = 1_200;
@@ -399,18 +402,6 @@ function routeTarget(rawTarget: string, from: string, isSelf: boolean): string {
 }
 
 /**
- * Runs `hook` before each event reaches any listener. The library's own plugins (nicklist)
- * listen before the app does and change state first, so state "before the event" must be
- * read here.
- */
-function beforeEmit(
-  client: Client,
-  hook: (event: string, payload: unknown) => void,
-): void {
-  beforeCall(client, "emit", hook as (...args: unknown[]) => void);
-}
-
-/**
  * Calls `hook` with the arguments of every `client.send`, before the line goes out. The
  * first argument is the tags object when the call has tags.
  */
@@ -418,13 +409,30 @@ function beforeSend(client: Client, hook: (...args: unknown[]) => void): void {
   beforeCall(client, "send", hook);
 }
 
-/** Runs `hook` before each call of a client method, through irc-client-ts's own hooks. */
+/** Runs `hook` before each call of a client method. */
 function beforeCall(client: Client, key: "emit" | "send", hook: (...args: unknown[]) => void): void {
+  hookCall(client, key, (fn, ...args) => {
+    hook(...args);
+    return fn(...args);
+  });
+}
+
+type Method = (...args: unknown[]) => unknown;
+
+/**
+ * Replaces a client method with `hook`, which gets the method and the arguments, through
+ * irc-client-ts's own hooks.
+ */
+function hookCall(
+  client: Client,
+  key: "emit" | "send",
+  hook: (fn: Method, ...args: unknown[]) => unknown,
+): void {
   (
     client as unknown as {
-      hooks: { beforeCall(key: string, hook: (...args: unknown[]) => void): void };
+      hooks: { hookCall(key: string, hook: (fn: Method, ...args: unknown[]) => unknown): void };
     }
-  ).hooks.beforeCall(key, hook);
+  ).hooks.hookCall(key, hook);
 }
 
 /** A PRIVMSG text as a line: "\x01ACTION waves\x01" is the action "waves". */
@@ -867,6 +875,13 @@ export class IrcManager {
     // one kind, such as each NAMES reply, would otherwise push everything else out of
     // *status.
     const reported = new Set<string>();
+    const reportBug = neverThrow(({ key, text }: { key: string; text: string }) => {
+      if (this.clients.get(serverId) !== client) return;
+      if (reported.has(key) || reported.size >= MAX_BUG_REPORTS) return;
+      this.pushMessage(serverId, STATUS_BUFFER, makeMessage("system", text));
+      // Only now: if showing the report threw, the next one may still get through.
+      reported.add(key);
+    });
     let reportedTooLong = false;
     (client as unknown as { runtime: ReturnType<typeof createNodeRuntime> }).runtime =
       createNodeRuntime(
@@ -876,13 +891,7 @@ export class IrcManager {
         },
         // A bug in honk, not in the server: say so, show the line, and keep going.
         // irc-client-ts still reads the line.
-        (line, err) => {
-          if (this.clients.get(serverId) !== client) return;
-          const { key, text } = describeLineError(line, err);
-          if (reported.has(key) || reported.size >= MAX_LINE_ERROR_REPORTS) return;
-          reported.add(key);
-          this.pushMessage(serverId, STATUS_BUFFER, makeMessage("system", text));
-        },
+        (line, err) => reportBug(describeLineError(line, err)),
         // Once per connection: a broken server may send many.
         () => {
           if (this.clients.get(serverId) !== client || reportedTooLong) return;
@@ -922,7 +931,7 @@ export class IrcManager {
     });
 
     this.clients.set(serverId, client);
-    this.bindClientEvents(serverId, client);
+    this.bindClientEvents(serverId, client, reportBug);
 
     // Per-attempt connect + registration timeout (catches DNS/TCP/TLS blackholes)
     ctrl.connectTimer = setTimeout(() => {
@@ -1021,7 +1030,11 @@ export class IrcManager {
     }
   }
 
-  private bindClientEvents(serverId: string, client: Client): void {
+  private bindClientEvents(
+    serverId: string,
+    client: Client,
+    reportBug: (report: { key: string; text: string }) => void,
+  ): void {
     const isStale = () => this.clients.get(serverId) !== client;
     /** The server state, or undefined if this client was replaced. */
     const live = () => (isStale() ? undefined : this.servers.get(serverId));
@@ -1034,7 +1047,10 @@ export class IrcManager {
     type Tags = Record<string, string | undefined>;
     const chatTags = new WeakMap<object, Tags>();
     let rawChatTags: Tags | undefined;
-    beforeEmit(client, (event, payload) => {
+    // Runs before each event reaches any listener. The library's own plugins (nicklist)
+    // listen before the app does and change state first, so state "before the event"
+    // must be read here.
+    const notePayload = (event: string, payload: unknown) => {
       const server = live();
       if (!server || typeof payload !== "object" || payload === null) return;
       if (event === "raw:privmsg" || event === "raw:notice") {
@@ -1048,6 +1064,23 @@ export class IrcManager {
       if (event === "quit" || event === "nick") {
         const source = (payload as { source?: { name?: string } }).source;
         priorChannels.set(payload, channelsWithNick(server, normalizeNick(source?.name)));
+      }
+    };
+
+    // irc-client-ts emits from its read loop, without await and without a catch: a
+    // listener that throws, honk's or one of the library's plugins, would end the loop,
+    // and nothing more would come from this server. So each emit is guarded. A nested
+    // emit, such as privmsg inside raw:privmsg, is caught at the inner one.
+    hookCall(client, "emit", (emit, event, payload) => {
+      try {
+        notePayload(event as string, payload);
+      } catch (err) {
+        reportBug(describeEventError(event as string, err));
+      }
+      try {
+        return emit(event, payload);
+      } catch (err) {
+        reportBug(describeEventError(event as string, err));
       }
     });
 

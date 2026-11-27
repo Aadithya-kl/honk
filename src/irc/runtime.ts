@@ -14,13 +14,6 @@ type LineErrorListener = (line: string, err: unknown) => void;
 /** Called when the server sends a line longer than MAX_LINE_BYTES, which is dropped. */
 type TooLongListener = () => void;
 
-/**
- * Calls `onLine` for each line, and gives what it throws to `onLineError`.
- *
- * The lines are split inside the socket's "data" listener. Since Bun 1.4.3, as in
- * Node, an error thrown there goes to uncaughtException, which would end honk. It
- * would also skip the rest of the chunk, so irc-client-ts would lose those bytes.
- */
 /** The longest part of a line that a report shows. An IRC message is 512 bytes. */
 const MAX_LINE_IN_REPORT = 512;
 
@@ -32,8 +25,33 @@ const MAX_LINE_IN_REPORT = 512;
  *    (no buffer, at onNumeric (manager.ts:1620:11)): :srv 470 goose #a #b :Forwarding"
  */
 export function describeLineError(line: string, err: unknown): { key: string; text: string } {
+  const { reason, where } = describeError(err);
+  const shown =
+    line.length > MAX_LINE_IN_REPORT ? `${line.slice(0, MAX_LINE_IN_REPORT)}...` : line;
+  return {
+    key: `${commandOf(line)} ${reason}`,
+    text: `A bug in honk: it could not handle this line from the server (${reason}${where}): ${shown}`,
+  };
+}
+
+/**
+ * How to report what a listener of an irc-client-ts event threw, as describeLineError
+ * does for a line. The key is the same for the same bug on the same event.
+ *
+ *   "A bug in honk: it could not handle the privmsg event (no buffer, at onChat (manager.ts:1480:9))"
+ */
+export function describeEventError(event: string, err: unknown): { key: string; text: string } {
+  const { reason, where } = describeError(err);
+  return {
+    key: `event ${event} ${reason}`,
+    text: `A bug in honk: it could not handle the ${event} event (${reason}${where})`,
+  };
+}
+
+/** What `err` says, and ", at <first stack frame>" (paths cut to the file name) or "". */
+function describeError(err: unknown): { reason: string; where: string } {
   const reason = err instanceof Error ? err.message || err.name : String(err);
-  // The first stack frame says which function failed. Paths are cut to the file name.
+  // The first stack frame says which function failed.
   const frame =
     err instanceof Error
       ? err.stack
@@ -42,14 +60,16 @@ export function describeLineError(line: string, err: unknown): { key: string; te
           ?.trim()
           .replace(/[^\s(]*\//g, "")
       : undefined;
-  const shown =
-    line.length > MAX_LINE_IN_REPORT ? `${line.slice(0, MAX_LINE_IN_REPORT)}...` : line;
-  return {
-    key: `${commandOf(line)} ${reason}`,
-    text: `A bug in honk: it could not handle this line from the server (${reason}${frame ? `, ${frame}` : ""}): ${shown}`,
-  };
+  return { reason, where: frame ? `, ${frame}` : "" };
 }
 
+/**
+ * Calls `onLine` for each line, and gives what it throws to `onLineError`.
+ *
+ * The lines are split inside the socket's "data" listener. Since Bun 1.4.3, as in
+ * Node, an error thrown there goes to uncaughtException, which would end honk. It
+ * would also skip the rest of the chunk, so irc-client-ts would lose those bytes.
+ */
 export function guardLines(onLine: LineListener, onLineError: LineErrorListener): LineListener {
   const report = neverThrow(onLineError);
   return (line) => {
@@ -62,10 +82,11 @@ export function guardLines(onLine: LineListener, onLineError: LineErrorListener)
 }
 
 /**
- * `fn`, but what it throws is dropped. For a callback that runs inside the socket's
- * "data" listener and only reports something: it must never end honk (see guardLines).
+ * `fn`, but what it throws is dropped. For a callback that only reports something and
+ * runs where a throw would end honk or the connection: inside the socket's "data"
+ * listener (see guardLines), or inside irc-client-ts's read loop.
  */
-function neverThrow<A extends unknown[]>(fn: (...args: A) => void): (...args: A) => void {
+export function neverThrow<A extends unknown[]>(fn: (...args: A) => void): (...args: A) => void {
   return (...args) => {
     try {
       fn(...args);
