@@ -1,0 +1,98 @@
+name: Bug report
+description: Something in honk does not work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. For a security problem, do not use this form.
+        Report it privately instead, as [SECURITY.md](https://github.com/agustingianni/honk/blob/main/SECURITY.md) explains.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        I typed /join #honk on Libera.Chat. I expected the channel to open,
+        but honk showed nothing and the status bar said "not connected".
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest list of steps that shows the bug. Include the commands you typed.
+      placeholder: |
+        1. honk --server irc.libera.chat --nick myname
+        2. /join #honk
+        3. ...
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: honk version
+      description: The output of `honk --version`.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install honk?
+      options:
+        - The install script (curl ... | sh)
+        - A binary from GitHub Releases, by hand
+        - From source (bun run start)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and CPU
+      placeholder: macOS 15 on Apple Silicon, or Ubuntu 24.04 on x86_64
+    validations:
+      required: true
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: The terminal app, and tmux or screen if you use one.
+      placeholder: Ghostty 1.2, inside tmux 3.5
+    validations:
+      required: true
+
+  - type: input
+    id: server
+    attributes:
+      label: IRC server or network
+      description: Leave it empty if the bug does not involve a server.
+      placeholder: irc.libera.chat:6697 with TLS and SASL
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Config file
+      description: |
+        The relevant part of your config file, if it matters for the bug.
+        Remove every password before you paste it.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, error messages, or anything else that helps.
+    validations:
+      required: false
