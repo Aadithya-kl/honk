@@ -160,7 +160,7 @@ ${files.map(({ name }) => `  ${JSON.stringify(name)}: ${ident(name)},`).join("\n
 
   const rows = files.map(
     ({ name, path, scheme }) =>
-      `| ${name} | ${scheme.variant} | [${path}](https://github.com/${REPO}/blob/${catalog.commit}/${path}) | ${scheme.author.replace(/\|/g, "\\|")} |`,
+      `| ${name} | ${scheme.variant} | [${path}](https://github.com/${REPO}/blob/${catalog.commit}/${path}) | ${scheme.author.replace(/[\\|]/g, "\\$&")} |`,
   );
   await Bun.write(
     join(THEMES_DIR, "SOURCE.md"),
