@@ -72,6 +72,8 @@ export const MIN_TEXT_CONTRAST = 4.5;
 export const MIN_ACCENT_CONTRAST = 3;
 /** A row under the mouse has at least this contrast with its normal background. */
 export const MIN_HOVER_CONTRAST = 1.04;
+/** The selected omnibox row has at least this contrast with the other rows, so it stays stronger than hover. */
+export const MIN_SELECTION_CONTRAST = 1.08;
 /** Side panels closer than this to the chat background cannot be seen apart from it... */
 export const MIN_PANEL_CONTRAST = 1.03;
 /** ...so they are made lighter, until they reach this. */
@@ -155,6 +157,7 @@ export function schemeToTheme(scheme: Scheme): Theme {
   // puts a strong gray there).
   const selection = nearBg(p.base02) ?? mix(bg, p.base02!, 0.4);
   const overlay = mix(bg, fg, 0.05);
+  const overlaySel = selectedColor(overlay, selection, fg);
 
   // Use a text slot only when it is readable and gray; otherwise fade the
   // main text toward the background.
@@ -195,10 +198,10 @@ export function schemeToTheme(scheme: Scheme): Theme {
     bgActiveRow: selection,
     bgMention: mix(bg, p.base08!, 0.15),
     bgOverlay: overlay,
-    bgOverlaySel: selection,
+    bgOverlaySel: overlaySel,
     bgRowHover: hoverColor(darker, selection, fg),
     bgActiveRowHover: hoverColor(selection, selection, fg),
-    bgOverlayHover: hoverColor(overlay, selection, fg),
+    bgOverlayHover: hoverColor(overlay, overlaySel, fg),
     borderOverlay: mix(bg, fgMuted, 0.6),
     gutter: mix(bg, fgMuted, 0.6),
 
@@ -278,9 +281,24 @@ export function hoverColor(background: string, selection: string, text: string):
 }
 
 /**
+ * The background of the selected row: the selection color when it is a clear
+ * step from the other rows toward the text color. Otherwise (broadcast's is
+ * 1.015:1 on the omnibox, and in a dark theme a darker row looks like a hole)
+ * the smallest clear step toward the text color.
+ */
+function selectedColor(background: string, selection: string, text: string): string {
+  const lb = luminance(background);
+  const towardText = luminance(selection) > lb === luminance(text) > lb;
+  return towardText && contrast(selection, background) >= MIN_SELECTION_CONTRAST
+    ? selection
+    : smallestStep(background, text, MIN_SELECTION_CONTRAST);
+}
+
+/**
  * The color nearest `from`, on the way to `to`, with `target` contrast against
  * `from`. stepUntil moves in 1% steps of the whole distance, and toward the
- * text color one step can overshoot 1.04:1 by half; this bisects instead.
+ * text color one step can overshoot a small target such as 1.04:1 by half;
+ * this bisects instead.
  */
 function smallestStep(from: string, to: string, target: number): string {
   let low = 0;

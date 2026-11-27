@@ -16,6 +16,7 @@ import {
   MIN_ACCENT_CONTRAST,
   MIN_HOVER_CONTRAST,
   MIN_PANEL_CONTRAST,
+  MIN_SELECTION_CONTRAST,
   MIN_TEXT_CONTRAST,
   mix,
   schemeToTheme,
@@ -58,10 +59,11 @@ describe("bundled themes", () => {
       }
       expect(contrast(t.bgSidebar, t.bgBase)).toBeGreaterThanOrEqual(MIN_PANEL_CONTRAST);
       expect(t.nickPalette.length).toBeGreaterThanOrEqual(4);
+      // The selected omnibox row is the one Enter picks: it must be easy to see.
+      expect(contrast(t.bgOverlaySel, t.bgOverlay)).toBeGreaterThanOrEqual(MIN_SELECTION_CONTRAST);
       // A row under the mouse shows, but looks weaker than the selected row.
-      // Where the selection color is itself hard to see (broadcast's omnibox:
-      // 1.015:1), the accent bar marks the selected row, and the hover stays
-      // at the smallest visible step.
+      // Where the selection color is itself faint, the hover stays at the
+      // smallest visible step.
       for (const [background, hover, selection] of [
         [t.bgSidebar, t.bgRowHover, t.bgActiveRow],
         [t.bgNicklist, t.bgRowHover, t.bgActiveRow],
@@ -141,6 +143,25 @@ describe("schemeToTheme", () => {
     const t = schemeToTheme(r.scheme);
     expect(contrast(t.bgSidebar, "#000000")).toBeGreaterThanOrEqual(MIN_PANEL_CONTRAST);
     expect(contrast(t.bgInput, t.bgFooter)).toBeGreaterThan(1.04);
+  });
+
+  test("makes a faint or dark omnibox selection a visible step toward the text", () => {
+    const lighter = (a: string, b: string) => contrast(a, "#000000") > contrast(b, "#000000");
+    for (const [variant, palette] of [
+      // base02 is the same as the background.
+      ["dark", { ...PALETTE16, base02: "#1e1e2e" }],
+      // base02 is darker than the omnibox: clear contrast, but a dark hole.
+      ["dark", { ...PALETTE16, base02: "#0a0a14" }],
+      ["light", { ...PALETTE16, base00: "#ffffff", base05: "#1f2328", base02: "#ffffff" }],
+    ] as const) {
+      const r = checkScheme({ ...scheme16(palette), variant });
+      if (!r.ok) throw new Error(r.problems.join("; "));
+      const t = schemeToTheme(r.scheme);
+      const shown = contrast(t.bgOverlaySel, t.bgOverlay);
+      expect(shown).toBeGreaterThanOrEqual(MIN_SELECTION_CONTRAST);
+      expect(shown).toBeLessThan(MIN_SELECTION_CONTRAST + 0.03);
+      expect(lighter(t.bgOverlaySel, t.bgOverlay)).toBe(variant === "dark");
+    }
   });
 
   test("moves a hard-to-read accent toward the text until it reaches 3:1", () => {
