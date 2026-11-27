@@ -16,7 +16,12 @@ import { connect as netConnect, createServer, type Server, type Socket } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
-import { LineSplitter, parseLine } from "../../src/irc/ircLine.ts";
+import {
+  LineSplitter,
+  parseLine,
+  parseTimestampParam,
+  timestampParam,
+} from "../../src/irc/ircLine.ts";
 
 export interface FakeIrcdOptions {
   /** 0 picks a free port. Default 0. */
@@ -94,6 +99,7 @@ const CAPS = [
   "batch",
   "draft/chathistory",
   "draft/event-playback",
+  "draft/read-marker",
   "echo-message",
   "labeled-response",
   "message-tags",
@@ -174,6 +180,8 @@ export class FakeIrcd {
    * before a client connects: CAP LS reads it.
    */
   labeledResponse = true;
+  /** MARKREAD from clients is dropped without a reply while this is true, like a lost line. */
+  ignoreMarkRead = false;
 
   private server: Server | null = null;
   /**
@@ -195,6 +203,11 @@ export class FakeIrcd {
   private held = new Set<string>();
   /** Away messages by lowercase nick. */
   private away = new Map<string, string>();
+  /**
+   * Read markers (draft/read-marker) in ms, by lowercase target. Shared by every client,
+   * like one bouncer user's clients: one reads #honk, the others hear about it.
+   */
+  private readMarkers = new Map<string, number>();
   private defaultUsers: string[];
   private logFn: (line: string) => void;
   private nextClientId = 1;
@@ -301,6 +314,20 @@ export class FakeIrcd {
     } else {
       this.deliver(from, command, target, body, null);
     }
+  }
+
+  /**
+   * Sets the read marker for a target, as another client of yours would. Clients with
+   * draft/read-marker hear about it.
+   */
+  setReadMarker(target: string, ms: number): void {
+    this.readMarkers.set(lower(target), ms);
+    for (const c of this.clients) this.sendMarkRead(c, target);
+  }
+
+  /** The read marker for a target in ms, or undefined if nobody set one. */
+  readMarker(target: string): number | undefined {
+    return this.readMarkers.get(lower(target));
   }
 
   /** A fake user joins a channel. */
@@ -727,6 +754,8 @@ export class FakeIrcd {
       }
       case "CHATHISTORY":
         return this.onChathistory(c, params, tags.label);
+      case "MARKREAD":
+        return this.onMarkRead(c, params);
       default:
         return this.reply(c, "421", `${command} :Unknown command`);
     }
@@ -870,8 +899,37 @@ export class FakeIrcd {
     this.addMember(ch, nick, "", c);
     this.toMembers(ch, `:${hostmask(nick)} JOIN ${ch.name}`);
     this.storeJoin(nick, ch.name);
+    // draft/read-marker: the marker goes after the JOIN and before the end of NAMES.
+    this.sendMarkRead(c, ch.name);
     if (ch.topic) this.sendTopic(c, ch);
     this.sendNames(c, ch);
+  }
+
+  /**
+   * MARKREAD <target> [timestamp=...]: without a time, asks for the marker. With one,
+   * moves it forward (never back) and tells every client. Like soju, a time in the
+   * future becomes now.
+   */
+  private onMarkRead(c: Client, params: string[]): void {
+    if (this.ignoreMarkRead) return;
+    const [target, value] = params;
+    if (!target) return this.send(c, `:${SERVER_NAME} FAIL MARKREAD NEED_MORE_PARAMS :Missing target`);
+    if (value === undefined) return this.sendMarkRead(c, target);
+    const ms = parseTimestampParam(value);
+    if (ms === undefined) {
+      return this.send(c, `:${SERVER_NAME} FAIL MARKREAD INVALID_PARAMS ${target} :Bad timestamp`);
+    }
+    const known = this.readMarkers.get(lower(target));
+    if (known !== undefined && known >= ms) return this.sendMarkRead(c, target);
+    this.setReadMarker(target, Math.min(ms, Date.now()));
+  }
+
+  /** Tells a client with draft/read-marker the marker for a target ("*" if none). */
+  private sendMarkRead(c: Client, target: string): void {
+    if (!c.registered || !c.nick || !c.caps.has("draft/read-marker")) return;
+    const ms = this.readMarkers.get(lower(target));
+    const value = ms === undefined ? "*" : timestampParam(ms);
+    this.send(c, `:${hostmask(c.nick)} MARKREAD ${target} ${value}`);
   }
 
   /** 332 and 333: the topic and who set it. */
@@ -1006,7 +1064,7 @@ export class FakeIrcd {
       const ref = `t${this.nextBatch++}`;
       this.send(c, `:${SERVER_NAME} BATCH +${ref} draft/chathistory-targets`, labelTag);
       for (const [nick, time] of latest) {
-        this.send(c, `CHATHISTORY TARGETS ${nick} timestamp=${new Date(time).toISOString()}`, {
+        this.send(c, `CHATHISTORY TARGETS ${nick} ${timestampParam(time)}`, {
           batch: ref,
         });
       }
@@ -1064,10 +1122,7 @@ export class FakeIrcd {
     lines: StoredMessage[] = this.history,
   ): number | undefined {
     if (!anchor || anchor === "*") return undefined;
-    if (anchor.startsWith("timestamp=")) {
-      const t = Date.parse(anchor.slice("timestamp=".length));
-      return Number.isNaN(t) ? undefined : t;
-    }
+    if (anchor.startsWith("timestamp=")) return parseTimestampParam(anchor);
     if (anchor.startsWith("msgid=")) {
       return lines.find((m) => m.msgid === anchor.slice("msgid=".length))?.time;
     }
