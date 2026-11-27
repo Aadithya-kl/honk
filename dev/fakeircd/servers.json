@@ -1,0 +1,22 @@
+{
+  "servers": [
+    {
+      "id": "alpha",
+      "name": "alpha",
+      "host": "127.0.0.1",
+      "port": 16667,
+      "tls": false,
+      "nick": "goose",
+      "channels": ["#honk", "#rust"]
+    },
+    {
+      "id": "beta",
+      "name": "beta",
+      "host": "127.0.0.1",
+      "port": 16677,
+      "tls": true,
+      "nick": "goose",
+      "channels": ["#honk", "#birds"]
+    }
+  ]
+}
