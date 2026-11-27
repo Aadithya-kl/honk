@@ -76,3 +76,18 @@ describe("links from other people", () => {
     expect(link.href).toBe("https://example.com/?q%5C040--incognito");
   });
 });
+
+test("a link ends at an invisible character, so it opens what it shows", () => {
+  expect(plainSegments("get https://example.com/\u202Egpj.exe")).toEqual([
+    { text: "get " },
+    { text: "https://example.com/", href: "https://example.com/" },
+    { text: "\u202Egpj.exe" },
+  ]);
+});
+
+test("a link with right-to-left letters is still one link", () => {
+  const url = "https://he.wikipedia.org/wiki/\u05E2\u05D1";
+  expect(plainSegments(url)).toEqual([
+    { text: url, href: "https://he.wikipedia.org/wiki/%D7%A2%D7%91" },
+  ]);
+});

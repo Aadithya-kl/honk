@@ -50,6 +50,35 @@ describe("stripIrcFormatting", () => {
   });
 });
 
+describe("bidi controls", () => {
+  // The system shows notifications with bidi: U+202E would turn "gpj.exe" into
+  // "exe.jpg", and U+2066..U+2069 would move text around.
+  const bad = event({
+    from: "al\u202Eice",
+    bufferName: "#ho\u2066nk\u2069",
+    text: "goose: see photo\u202Egpj.exe\u200F\u009c",
+  });
+
+  test("are removed from the nick, the channel and the text", () => {
+    const { notifier, sent } = setup();
+    notifier.notify(bad);
+    expect(sent).toEqual([{ title: "alice in #honk", message: "goose: see photogpj.exe" }]);
+  });
+
+  test("are removed from the missed-mentions summary", () => {
+    const { notifier, sent } = setup();
+    notifier.notifyMissed([bad, { ...bad, bufferName: "#b\u202Eird" }]);
+    expect(sent[0]!.message).toBe("2 mentions while you were away, in #honk and #bird");
+  });
+
+  test("leave right-to-left text alone", () => {
+    const { notifier, sent } = setup();
+    const text = "goose: \u05E9\u05DC\u05D5\u05DD \u0645\u0631\u062D\u0628\u0627";
+    notifier.notify(event({ text }));
+    expect(sent[0]!.message).toBe(text);
+  });
+});
+
 describe("formatNotification", () => {
   test("a channel mention names the sender and the channel", () => {
     expect(formatNotification(event())).toEqual({

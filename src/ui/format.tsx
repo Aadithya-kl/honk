@@ -53,7 +53,10 @@ interface FormattedSegment {
   href?: string;
 }
 
-const URL_RE = /https?:\/\/[^\s<>"'`]+/g;
+// A link ends at a control or format character, such as U+202E (RIGHT-TO-LEFT
+// OVERRIDE). The screen does not show them, so a link that kept them would open
+// an address other than the one you read.
+const URL_RE = /https?:\/\/[^\s<>"'`\p{Cc}\p{Cf}]+/gu;
 
 function trimUrlTrailingPunct(url: string): { url: string; trailing: string } {
   let end = url.length;
