@@ -294,17 +294,18 @@ sh scripts/test-linux.sh alpine:3.20   # one image
 
 ## Releasing
 
-Set `"version"` in `package.json` to the new version and commit it. Then push a
-tag with the same version and a `v` in front. The release workflow builds the
-binaries, runs `scripts/test-linux.sh` on an x64 and an arm64 runner, and only
-if every distro passes, signs the binaries and attaches them to a GitHub
-release. It stops right away if the tag and `package.json` do not match.
+[release-please](https://github.com/googleapis/release-please) keeps a pull
+request open, "chore(main): release 0.2.0", that sets the next version in
+`package.json` and adds its section to `CHANGELOG.md`. It writes both from the
+commit messages, which follow [Conventional Commits](https://www.conventionalcommits.org):
+`feat:` bumps the minor version, `fix:` the patch version. See AGENTS.md.
 
-```sh
-# package.json has "version": "0.2.0"
-git tag v0.2.0
-git push origin v0.2.0
-```
+To release, edit the changelog in that pull request if you like, and merge it.
+The release-please workflow then tags the merge commit, builds the binaries,
+runs `scripts/test-linux.sh` on an x64 and an arm64 runner, and only if every
+distro passes, signs the binaries, attaches them to the GitHub release, and
+publishes it. Until then the release is a draft, so `install.sh` and the update
+check don't see it.
 
 ## License
 

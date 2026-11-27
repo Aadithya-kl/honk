@@ -14,21 +14,21 @@ const targets = [
   "linux-arm64-musl",
 ];
 
-// The version that `honk --version` prints. In the release workflow, a tag push
-// sets GITHUB_REF_NAME to the tag, such as "v0.2.0". A local build describes the
-// commit instead, such as "v0.1.0-3-gabc1234-dirty".
+// The version that `honk --version` prints. The release workflow sets
+// HONK_RELEASE_TAG to the tag release-please made, such as "v0.2.0". A local build
+// describes the commit instead, such as "v0.1.0-3-gabc1234-dirty".
 //
 // A release tag must match the version in package.json: tag v0.2.0 needs
 // "version": "0.2.0". Otherwise the release stops here, before it builds
 // anything, so a binary never reports one version while package.json says another.
 async function releaseVersion(): Promise<string> {
-  if (process.env.GITHUB_REF_TYPE === "tag" && process.env.GITHUB_REF_NAME) {
-    const tag = process.env.GITHUB_REF_NAME;
+  const tag = process.env.HONK_RELEASE_TAG;
+  if (tag) {
     const expected = `v${pkg.version}`;
     if (tag !== expected) {
       console.error(
         `release: the tag is ${tag}, but package.json has version ${pkg.version}, so the tag should be ${expected}.\n` +
-          `release: set "version" in package.json to "${tag.replace(/^v/, "")}", commit, and tag that commit again.`,
+          `release: release-please sets both, so check that .release-please-manifest.json and package.json agree.`,
       );
       process.exit(1);
     }
