@@ -9,7 +9,9 @@
 #
 # The jobs run here, not in a workflow started by the tag: a tag made with the
 # default GITHUB_TOKEN starts no other workflow (GitHub's rule against loops).
-# For the same reason, the release PR gets no CI runs.
+# The release PR is made with that token too, so its CI runs wait for
+# approval ("Approve workflows to run"). They are optional: the PR only
+# changes CHANGELOG.md and the version, and the jobs below check the build.
 name: release-please
 on:
   push:
