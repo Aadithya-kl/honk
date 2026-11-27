@@ -15,9 +15,17 @@ updates:
     groups:
       opentui:
         patterns: ["@opentui/*"]
+    # "build(deps): bump ...", as AGENTS.md asks. No changelog line.
+    commit-message:
+      prefix: build
+      include: scope
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     cooldown:
       default-days: 7
+    # "ci(deps): bump ...", as AGENTS.md asks. No changelog line.
+    commit-message:
+      prefix: ci
+      include: scope
