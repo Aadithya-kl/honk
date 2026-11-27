@@ -72,7 +72,7 @@ export const MIN_TEXT_CONTRAST = 4.5;
 export const MIN_ACCENT_CONTRAST = 3;
 /** A row under the mouse has at least this contrast with its normal background. */
 export const MIN_HOVER_CONTRAST = 1.04;
-/** The selected omnibox row has at least this contrast with the other rows, so it stays stronger than hover. */
+/** A selected row (active channel, omnibox) has at least this contrast with the other rows, so it stays stronger than hover. */
 export const MIN_SELECTION_CONTRAST = 1.08;
 /** Side panels closer than this to the chat background cannot be seen apart from it... */
 export const MIN_PANEL_CONTRAST = 1.03;
@@ -157,6 +157,9 @@ export function schemeToTheme(scheme: Scheme): Theme {
   // puts a strong gray there).
   const selection = nearBg(p.base02) ?? mix(bg, p.base02!, 0.4);
   const overlay = mix(bg, fg, 0.05);
+  // The active channel row is also the "new messages below" bar over the
+  // chat, so it must be clear on both.
+  const activeRow = selectedColor(bg, selectedColor(darker, selection, fg), fg);
   const overlaySel = selectedColor(overlay, selection, fg);
 
   // Use a text slot only when it is readable and gray; otherwise fade the
@@ -195,12 +198,12 @@ export function schemeToTheme(scheme: Scheme): Theme {
     bgHeader: darker,
     bgFooter: darkest,
     bgInput: input,
-    bgActiveRow: selection,
+    bgActiveRow: activeRow,
     bgMention: mix(bg, p.base08!, 0.15),
     bgOverlay: overlay,
     bgOverlaySel: overlaySel,
-    bgRowHover: hoverColor(darker, selection, fg),
-    bgActiveRowHover: hoverColor(selection, selection, fg),
+    bgRowHover: hoverColor(darker, activeRow, fg),
+    bgActiveRowHover: hoverColor(activeRow, activeRow, fg),
     bgOverlayHover: hoverColor(overlay, overlaySel, fg),
     borderOverlay: mix(bg, fgMuted, 0.6),
     gutter: mix(bg, fgMuted, 0.6),
@@ -277,35 +280,36 @@ export function hoverColor(background: string, selection: string, text: string):
   const half = mix(background, selection, 0.5);
   if (contrast(half, background) >= MIN_HOVER_CONTRAST) return half;
   const toward = contrast(selection, background) > MIN_HOVER_CONTRAST ? selection : text;
-  return smallestStep(background, toward, MIN_HOVER_CONTRAST);
+  return smallestStep(background, toward, background, MIN_HOVER_CONTRAST);
 }
 
 /**
- * The background of the selected row: the selection color when it is a clear
- * step from the other rows toward the text color. Otherwise (broadcast's is
- * 1.015:1 on the omnibox, and in a dark theme a darker row looks like a hole)
- * the smallest clear step toward the text color.
+ * The background of the selected row: steps toward the text color until it
+ * is a clear step from the row color. It starts from the selection color when
+ * that is on the text's side, which keeps its hue (gotham's blue), and from
+ * the row color otherwise (batman's darker selection looks like a hole).
  */
 function selectedColor(background: string, selection: string, text: string): string {
   const lb = luminance(background);
   const towardText = luminance(selection) > lb === luminance(text) > lb;
-  return towardText && contrast(selection, background) >= MIN_SELECTION_CONTRAST
-    ? selection
-    : smallestStep(background, text, MIN_SELECTION_CONTRAST);
+  return smallestStep(towardText ? selection : background, text, background, MIN_SELECTION_CONTRAST);
 }
 
 /**
  * The color nearest `from`, on the way to `to`, with `target` contrast against
- * `from`. stepUntil moves in 1% steps of the whole distance, and toward the
- * text color one step can overshoot a small target such as 1.04:1 by half;
- * this bisects instead.
+ * `bg`. `from` must already be on the side of `bg` that `to` is on, so the
+ * contrast only grows along the way. Returns `from` if it is already there.
+ * stepUntil moves in 1% steps of the whole distance, and toward the text
+ * color one step can overshoot a small target such as 1.04:1 by half; this
+ * bisects instead.
  */
-function smallestStep(from: string, to: string, target: number): string {
+function smallestStep(from: string, to: string, bg: string, target: number): string {
+  if (contrast(from, bg) >= target) return from;
   let low = 0;
   let high = 1;
   for (let i = 0; i < 20; i++) {
     const middle = (low + high) / 2;
-    if (contrast(mix(from, to, middle), from) >= target) high = middle;
+    if (contrast(mix(from, to, middle), bg) >= target) high = middle;
     else low = middle;
   }
   return mix(from, to, high);
