@@ -5,6 +5,7 @@ import { cliAction, HELP, unknownCommandText } from "./cli.ts";
 import { ConfigError, defaultConfigPath, loadConfig, saveThemeSetting } from "./config.ts";
 import { IrcManager } from "./irc/manager.ts";
 import { Notifier } from "./notify.ts";
+import { chooseNotificationProtocol, parseNotificationSetting, readTmuxInfo } from "./notifyProtocol.ts";
 import { applyTheme } from "./theme.ts";
 import { allThemes, loadUserThemes, selectTheme, type ThemeEntry } from "./themes/index.ts";
 import { startUpdateCheck } from "./updateCheck.ts";
@@ -73,6 +74,14 @@ if (!g.__ircHot) {
   const selected = selectTheme(config.theme, themes);
   const warnings = [...userThemes.warnings];
   if (selected.warning) warnings.push(selected.warning);
+  // Inside tmux and zellij, OpenTUI can't see the terminal and would send no
+  // notifications, so honk picks the sequence. See src/notifyProtocol.ts.
+  const notifications = parseNotificationSetting(config.notifications);
+  if (notifications.warning) warnings.push(notifications.warning);
+  const protocol = notifications.enabled
+    ? chooseNotificationProtocol(process.env, notifications.protocol, readTmuxInfo)
+    : {};
+  if (protocol.warning) warnings.push(protocol.warning);
   for (const warning of warnings) manager.addAppNotice(warning);
 
   // In the background, at most once a day. See src/updateCheck.ts.
@@ -83,11 +92,12 @@ if (!g.__ircHot) {
     // A left click would otherwise focus the clicked element (the chat scrollbox), and
     // the input would stop getting keys. Focus moves only through `focused` props.
     autoFocus: false,
+    ...(protocol.protocol && { environment: { OPENTUI_NOTIFICATION_PROTOCOL: protocol.protocol } }),
   });
   const root = createRoot(renderer);
 
   // Mentions and DMs become desktop notifications, shown by the terminal. See src/notify.ts.
-  if (config.notifications !== false) {
+  if (notifications.enabled) {
     const notifier = new Notifier((message, title) =>
       renderer.triggerNotification(message, title),
     );

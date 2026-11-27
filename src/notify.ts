@@ -5,7 +5,9 @@
  * notification with an escape sequence (OSC 9, OSC 777 or OSC 99), through OpenTUI's
  * `renderer.triggerNotification`. OpenTUI picks the sequence the terminal supports and
  * wraps it for tmux and screen. This works over SSH (the notification shows on the
- * machine you sit at) and needs no signed app bundle on macOS.
+ * machine you sit at) and needs no signed app bundle on macOS. Inside tmux and
+ * zellij, OpenTUI can't tell the terminal, so honk picks the sequence: see
+ * src/notifyProtocol.ts.
  */
 
 import type { BufferKind, MessageKind } from "./types.ts";

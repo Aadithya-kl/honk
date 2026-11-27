@@ -192,8 +192,30 @@ Inside tmux, let the notification through to the outer terminal:
 
 ```sh
 # ~/.tmux.conf
-set -g allow-passthrough on
+set -g allow-passthrough all
 ```
+
+With `on` instead of `all`, tmux passes notifications only while honk's window
+is on screen, so a mention that arrives while you are in another window shows
+nothing. Either value lets any program in a pane send escape sequences
+straight to your terminal.
+
+honk then asks tmux which terminal it runs in, and sends the notification that
+terminal shows. If tmux blocks notifications, or honk does not know the
+terminal, honk says so in `*status`.
+
+Inside zellij, notifications work with no setup, also from a hidden tab.
+
+Where honk can't find out the terminal, name the kind of notification in the
+config file: `"osc777"` for Ghostty, WezTerm and VTE terminals, `"osc9"` for
+iTerm2, or `"osc99"` for kitty and foot. You need this inside GNU screen, and
+when you run honk on an SSH host from inside a tmux on your own computer:
+
+```json
+{ "notifications": "osc777", "servers": [] }
+```
+
+mosh does not pass notifications through, so honk can't show them over mosh.
 
 To turn notifications off, add this to the top level of the config file:
 

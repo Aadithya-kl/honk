@@ -19,8 +19,12 @@ export interface ServerConfig {
 
 export interface AppConfig {
   servers: ServerConfig[];
-  /** Desktop notifications for mentions and DMs. On unless set to false. See src/notify.ts. */
-  notifications?: boolean;
+  /**
+   * Desktop notifications for mentions and DMs. On unless set to false. A protocol name
+   * ("osc9", "osc777" or "osc99") forces that escape sequence, for terminals honk can't
+   * detect. Any other value is kept so startup can warn about it. See src/notifyProtocol.ts.
+   */
+  notifications?: boolean | string;
   /** Color theme id, such as "nord". See src/themes/index.ts. */
   theme?: string;
   /**
