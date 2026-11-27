@@ -2,10 +2,11 @@ import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { nickColor, theme, useThemeVersion } from "../theme.ts";
 import type { ThemeEntry } from "../themes/index.ts";
-import { findSlashCommand, needsArgs, SLASH_COMMANDS } from "../irc/commands.ts";
+import { findSlashCommand, needsArgs, SLASH_COMMANDS, syntax } from "../irc/commands.ts";
 import { sameNick } from "../irc/names.ts";
 import type { ActiveBuffer, ServerState } from "../types.ts";
 import { bufferDisplayName, truncate, unreadBadge } from "./display.ts";
+import { type FuzzyMatch, fuzzyMatch, matchLabel, rankMatches, shorterFirst } from "./fuzzy.ts";
 
 interface OmniboxItem {
   id: string;
@@ -21,7 +22,18 @@ interface OmniboxItem {
   keepOpen?: boolean;
   /** In the theme list: the theme this row previews when selected. */
   themeId?: string;
+  /** Indexes of the label's characters that the query matched, shown highlighted. */
+  highlights?: readonly number[];
+  /**
+   * In the actions list: the key that remembers this action was used (see state.ts), so
+   * it ranks first among equal matches. Rows for each server share one key, such as
+   * "cmd-reconnect", so the active server's row still comes first.
+   */
+  historyKey?: string;
 }
+
+/** When each action was last used: a higher number is more recent. See state.ts. */
+export type RecentActions = Readonly<Record<string, number>>;
 
 interface OmniboxProps {
   servers: ServerState[];
@@ -32,6 +44,8 @@ interface OmniboxProps {
   onSelectBuffer: (serverId: string, buffer: string) => void;
   onOpenDm: (serverId: string, nick: string) => void;
   onRunCommand: (command: string) => void;
+  /** Runs a slash command on a given server, which may not be the active one. */
+  onRunCommandOn: (serverId: string, command: string) => void;
   onToggleSidebar: () => void;
   onToggleNicklist: () => void;
   themes: ThemeEntry[];
@@ -41,6 +55,9 @@ interface OmniboxProps {
   onPreviewTheme: (id: string) => void;
   /** Uses a theme and saves it in the config file. */
   onChooseTheme: (id: string) => void;
+  recentActions: RecentActions;
+  /** An action was chosen, by its historyKey. */
+  onActionUsed: (key: string) => void;
 }
 
 /** "main": buffers and the prefix modes. "theme": the color theme list. */
@@ -51,28 +68,28 @@ const THEME_ACTION_LABEL = "Preferences: Color Theme...";
 /** How far back the active buffer is read to rank recent speakers first in "@" mode. */
 const RECENT_SPEAKER_SCAN = 300;
 
-function fuzzyScore(query: string, target: string): number {
-  const q = query.toLowerCase();
-  const t = target.toLowerCase();
-  if (!q) return 1;
-  if (t === q) return 1000;
-  if (t.startsWith(q)) return 500 - t.length;
-  const idx = t.indexOf(q);
-  if (idx !== -1) return 300 - idx - t.length * 0.1;
+/** The matched positions that fall in the first `length` characters: the label's part. */
+function labelHighlights(match: FuzzyMatch, length: number, offset = 0): number[] {
+  return match.positions.map((p) => p + offset).filter((p) => p >= 0 && p < length);
+}
 
-  let qi = 0;
-  let score = 0;
-  let consecutive = 0;
-  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) {
-      qi++;
-      consecutive++;
-      score += 10 + consecutive * 5;
-    } else {
-      consecutive = 0;
-    }
-  }
-  return qi === q.length ? score : -1;
+/**
+ * The actions that match `q`, best first, as in VS Code: equal matches go by the one
+ * used last, then by list order (which puts the active server's rows first). A match in
+ * the label ranks first; the detail can match too ("history" finds "Load Older Messages").
+ */
+export function rankActions<T extends Pick<OmniboxItem, "id" | "label" | "detail" | "historyKey">>(
+  q: string,
+  items: readonly T[],
+  recent: RecentActions = {},
+): (T & { highlights: number[] })[] {
+  const usedAt = (item: T) => recent[item.historyKey ?? item.id] ?? 0;
+  return rankMatches(
+    q,
+    items,
+    (item) => [item.label, item.detail],
+    (a, b) => usedAt(b) - usedAt(a),
+  ).map(({ item, match }) => ({ ...item, highlights: labelHighlights(match, item.label.length) }));
 }
 
 interface KnownUser {
@@ -106,6 +123,130 @@ function collectUsers(servers: ServerState[]): KnownUser[] {
   return [...users.values()];
 }
 
+const isOnline = (s: ServerState) =>
+  s.status === "connected" || s.status === "connecting" || s.status === "reconnecting";
+
+/** The servers with the active one first, the rest in their usual order. */
+function activeFirst(servers: ServerState[], active: ServerState | undefined): ServerState[] {
+  return active ? [active, ...servers.filter((s) => s !== active)] : servers;
+}
+
+/**
+ * The servers a "+ Join" or "Message" row can act on: connected ones, the active server
+ * first. `nameFilter` (the second word typed, as in "#rust beta") narrows them by name.
+ */
+function connectedServers(
+  servers: ServerState[],
+  active: ServerState | undefined,
+  nameFilter: string,
+): ServerState[] {
+  return activeFirst(servers, active).filter(
+    (s) => s.status === "connected" && fuzzyMatch(nameFilter, s.name) !== null,
+  );
+}
+
+interface QuickOpenContext {
+  servers: ServerState[];
+  active: ActiveBuffer | null;
+  /** Buffers visited lately, newest first, as "serverId:buffer". */
+  recentKeys: string[];
+  onSelectBuffer: (serverId: string, buffer: string) => void;
+  onOpenDm: (serverId: string, nick: string) => void;
+}
+
+/**
+ * The rows for a query with no prefix (or "#"): your buffers, and the people you could
+ * open a DM with, in one list. Each ranks by its name (see matchLabel), so "al" puts
+ * @alice above #honk on server "alpha", which only matches by its server's name.
+ *
+ * With nothing typed (or "#" alone) the buffers that need you come first: mentions,
+ * unread, then the ones visited lately. The buffer you are in goes last, so Ctrl+K then
+ * Enter goes back to the previous one.
+ */
+export function quickOpenRows(q: string, ctx: QuickOpenContext): OmniboxItem[] {
+  const { servers, active, recentKeys } = ctx;
+  const channelOnly = q.startsWith("#");
+  const browsing = !q || q === "#";
+  // `isUser`: a buffer beats a person on an equal match, since you are already in it.
+  const rows: { item: OmniboxItem; score: number; isUser: boolean }[] = [];
+
+  for (const s of servers) {
+    for (const bufName of s.bufferOrder) {
+      const buf = s.buffers[bufName];
+      if (!buf) continue;
+      if (channelOnly && buf.kind !== "channel") continue;
+
+      const key = `${s.id}:${bufName}`;
+      const displayName = bufferDisplayName(buf);
+      const match = matchLabel(q, displayName, s.name);
+      if (!match) continue;
+
+      let boost = 0;
+      if (browsing) {
+        if (buf.hasMention) boost += 400;
+        else if (buf.unread > 0) boost += 200 + Math.min(buf.unread, 50);
+        const recIdx = recentKeys.indexOf(key);
+        if (recIdx !== -1) boost += 100 - recIdx;
+        if (active?.serverId === s.id && active.buffer === bufName) boost -= 10_000;
+      }
+
+      rows.push({
+        score: match.score + boost,
+        isUser: false,
+        item: {
+          id: `buf-${key}`,
+          label: displayName,
+          highlights: labelHighlights(match, displayName.length),
+          labelColor:
+            buf.kind === "channel"
+              ? theme.fgBright
+              : buf.kind === "dm"
+                ? theme.accentAlt
+                : theme.fgMuted,
+          detail: s.name,
+          badge: buf.unread > 0 ? unreadBadge(buf.unread) : undefined,
+          badgeColor: buf.hasMention ? theme.red : theme.accent,
+          onSelect: () => ctx.onSelectBuffer(s.id, bufName),
+        },
+      });
+    }
+  }
+
+  // People you share a channel with but have no DM with yet ("@alice" opens one). Someone
+  // with a DM already has a row above, as its buffer. "alice beta" picks the server.
+  if (!channelOnly && q) {
+    for (const u of collectUsers(servers)) {
+      if (u.hasDm) continue;
+      // Matched as "@alice", the way their DM will be named, so both score alike.
+      const label = `@${u.nick}`;
+      const match = matchLabel(q, label, u.serverName);
+      if (!match) continue;
+      rows.push({
+        score: match.score,
+        isUser: true,
+        item: {
+          id: `user-${u.serverId}:${u.nick.toLowerCase()}`,
+          label,
+          highlights: labelHighlights(match, label.length),
+          labelColor: nickColor(u.nick),
+          detail: `user, ${u.serverName}`,
+          onSelect: () => ctx.onOpenDm(u.serverId, u.nick),
+        },
+      });
+    }
+  }
+
+  // Equal matches: a buffer before a person, then the shorter name ("#rust" before
+  // "#rust-dev"), then sidebar order (the sort is stable).
+  rows.sort(
+    (a, b) =>
+      b.score - a.score ||
+      Number(a.isUser) - Number(b.isUser) ||
+      (browsing ? 0 : a.item.label.length - b.item.label.length),
+  );
+  return rows.map((r) => r.item);
+}
+
 /** Fits a row into `width` columns: the label keeps at least half, then the detail is cut. */
 function fitRow(item: OmniboxItem, width: number): { label: string; detail?: string } {
   const extras =
@@ -119,6 +260,27 @@ function fitRow(item: OmniboxItem, width: number): { label: string; detail?: str
   return { label, detail };
 }
 
+/**
+ * Splits a fitted label into runs of matched and unmatched characters, for the
+ * highlight. A label cut short ("Server: Reconn…") drops the matches past the cut.
+ */
+export function highlightRuns(
+  label: string,
+  fullLength: number,
+  highlights: readonly number[] = [],
+): { text: string; hit: boolean }[] {
+  const shown = label.length < fullLength ? label.length - 1 : label.length;
+  const hits = new Set(highlights.filter((p) => p < shown));
+  const runs: { text: string; hit: boolean }[] = [];
+  for (let i = 0; i < label.length; i++) {
+    const hit = hits.has(i);
+    const last = runs.at(-1);
+    if (last && last.hit === hit) last.text += label[i];
+    else runs.push({ text: label[i]!, hit });
+  }
+  return runs;
+}
+
 export function Omnibox({
   servers,
   active,
@@ -128,12 +290,15 @@ export function Omnibox({
   onSelectBuffer,
   onOpenDm,
   onRunCommand,
+  onRunCommandOn,
   onToggleSidebar,
   onToggleNicklist,
   themes,
   themeId,
   onPreviewTheme,
   onChooseTheme,
+  recentActions,
+  onActionUsed,
 }: OmniboxProps) {
   const [mode, setMode] = useState<OmniboxMode>("main");
   const [query, setQuery] = useState("");
@@ -168,18 +333,16 @@ export function Omnibox({
     if (mode === "theme") {
       const q = trimmed.trim();
       return all(
-        themes
-          .map((entry, order) => ({
-            entry,
-            order,
-            score: fuzzyScore(q, `${entry.name} ${entry.id} ${entry.variant}`),
-          }))
-          .filter((x) => x.score >= 0)
-          .sort((a, b) => (q ? b.score - a.score : 0) || a.order - b.order)
-          .map(({ entry }): OmniboxItem => ({
+        rankMatches(
+          q,
+          themes,
+          (entry) => [entry.name, `${entry.id} ${entry.variant}`],
+          shorterFirst((entry) => entry.name),
+        ).map(({ item: entry, match }): OmniboxItem => ({
             id: `theme-${entry.id}`,
             themeId: entry.id,
             label: entry.name,
+            highlights: labelHighlights(match, entry.name.length),
             detail: [
               entry.variant,
               entry.source === "user" ? "yours" : undefined,
@@ -237,17 +400,21 @@ export function Omnibox({
             id: "slash-run",
             label: `Run ${slash.trimEnd()}`,
             labelColor: theme.cyan,
-            detail: known ? `/${known.name} ${known.args ?? ""}`.trimEnd() : "unknown command",
+            detail: known ? syntax(known) : "unknown command",
             onSelect: () => onRunCommand(slash),
           },
         ]);
       }
-      const matches = SLASH_COMMANDS.map((cmd) => ({ cmd, score: fuzzyScore(word, cmd.name) }))
-        .filter((x) => x.score >= 0)
-        .sort((a, b) => b.score - a.score)
-        .map(({ cmd }): OmniboxItem => ({
+      const matches = rankMatches(
+        word,
+        SLASH_COMMANDS,
+        (cmd) => [cmd.name],
+        shorterFirst((cmd) => cmd.name),
+      ).map(({ item: cmd, match }): OmniboxItem => ({
           id: `slash-${cmd.name}`,
-          label: cmd.args ? `/${cmd.name} ${cmd.args}` : `/${cmd.name}`,
+          label: syntax(cmd),
+          // The label starts with "/", so the name's positions move by one.
+          highlights: labelHighlights(match, cmd.name.length + 1, 1),
           labelColor: theme.cyan,
           detail: cmd.summary,
           // A command that needs arguments fills the query, so the user types them next.
@@ -273,10 +440,11 @@ export function Omnibox({
       const q = trimmed.slice(1).trim();
       const buf = activeServer && active ? activeServer.buffers[active.buffer] : undefined;
       const fill = (next: string) => ({ onSelect: () => setQuery(next), keepOpen: true });
-      const status = activeServer?.status;
-      const online = status === "connected" || status === "connecting" || status === "reconnecting";
+      const online = activeServer ? isOnline(activeServer) : false;
       const commands: OmniboxItem[] = [];
-      const add = (...list: OmniboxItem[]) => commands.push(...list);
+      // Every action is remembered when used (see historyKey), by its id unless it says otherwise.
+      const add = (...list: OmniboxItem[]) =>
+        commands.push(...list.map((item) => ({ historyKey: item.id, ...item })));
 
       add(
         { id: "cmd-join", label: "Channel: Join a Channel...", hint: "#", ...fill("#") },
@@ -340,21 +508,26 @@ export function Omnibox({
         add({
           id: "cmd-nick",
           label: "Server: Change Nick...",
-          detail: activeServer.nick,
+          detail: `${activeServer.nick}, ${activeServer.name}`,
           ...fill("/nick "),
         });
       }
-      if (activeServer?.config.host) {
+      // Every server you can connect to, the active one first. Demo servers have no host.
+      for (const s of activeFirst(servers, activeServer)) {
+        if (!s.config.host) continue;
+        const up = isOnline(s);
         add({
-          id: "cmd-reconnect",
-          label: `Server: ${online ? "Reconnect" : "Connect"} ${activeServer.name}`,
-          onSelect: () => onRunCommand("/connect"),
+          id: `cmd-reconnect-${s.id}`,
+          label: `Server: ${up ? "Reconnect" : "Connect"} ${s.name}`,
+          historyKey: "cmd-reconnect",
+          onSelect: () => onRunCommandOn(s.id, "/connect"),
         });
-        if (online) {
+        if (up) {
           add({
-            id: "cmd-disconnect",
-            label: `Server: Disconnect ${activeServer.name}`,
-            onSelect: () => onRunCommand("/disconnect"),
+            id: `cmd-disconnect-${s.id}`,
+            label: `Server: Disconnect ${s.name}`,
+            historyKey: "cmd-disconnect",
+            onSelect: () => onRunCommandOn(s.id, "/disconnect"),
           });
         }
       }
@@ -364,13 +537,7 @@ export function Omnibox({
         { id: "cmd-quit", label: "App: Quit", hint: "^C", onSelect: () => onRunCommand("/quit") },
       );
 
-      return all(
-        commands
-          .map((item) => ({ item, score: fuzzyScore(q, `${item.label} ${item.detail ?? ""}`) }))
-          .filter((x) => x.score >= 0)
-          .sort((a, b) => b.score - a.score)
-          .map((x) => x.item),
-      );
+      return all(rankActions(q, commands, recentActions));
     }
 
     // @ -- find a user and open a DM
@@ -394,10 +561,13 @@ export function Omnibox({
         u.serverId === active?.serverId &&
         sameNick(u.nick, activeBuf.name);
 
-      const users = collectUsers(servers)
-        .map((u) => {
-          let score = fuzzyScore(q, `${u.nick} ${u.serverName}`);
-          if (score >= 0 && !q) {
+      const known = collectUsers(servers);
+      const users = known
+        .flatMap((u) => {
+          const match = matchLabel(q, u.nick, u.serverName);
+          if (!match) return [];
+          let score = match.score;
+          if (!q) {
             // People you talk with first: open DMs, then who spoke here lately,
             // then the rest of this channel. The DM you are in goes last.
             const lower = u.nick.toLowerCase();
@@ -413,15 +583,20 @@ export function Omnibox({
             if (spoke !== undefined) score += 2000 - spoke;
             else if (sameServer && here.has(lower)) score += 1000;
           }
-          return { u, score };
+          return [{ u, score, match }];
         })
-        .filter((x) => x.score >= 0)
-        .sort((a, b) => b.score - a.score || a.u.nick.localeCompare(b.u.nick));
+        .sort(
+          (a, b) =>
+            b.score - a.score ||
+            (q ? a.u.nick.length - b.u.nick.length : 0) ||
+            a.u.nick.localeCompare(b.u.nick),
+        );
 
       const list = users.map(
-        ({ u }): OmniboxItem => ({
+        ({ u, match }): OmniboxItem => ({
           id: `user-${u.serverId}:${u.nick.toLowerCase()}`,
           label: u.nick,
+          highlights: labelHighlights(match, u.nick.length),
           labelColor: nickColor(u.nick),
           detail: u.hasDm ? `has a DM, ${u.serverName}` : u.serverName,
           onSelect: () => onOpenDm(u.serverId, u.nick),
@@ -429,16 +604,21 @@ export function Omnibox({
       );
 
       const result = top(list);
-      // A nick nobody shares a channel with: offer a new DM anyway.
-      if (q && activeServer && !q.includes(" ") && !sameNick(q, activeServer.nick)) {
-        const exact = users.some(({ u }) => u.serverId === activeServer.id && sameNick(u.nick, q));
-        if (!exact) {
+      // A nick nobody shares a channel with: offer a new DM anyway, on each connected
+      // server. A nick known somewhere gets these rows only when a server is named, as
+      // in "@dave alpha", so "@dave" stays on the dave you know.
+      const [nick = "", serverWord = ""] = q.split(/\s+/);
+      // One pass over the users: the servers where this nick is known.
+      const knownOn = new Set(known.filter((u) => sameNick(u.nick, nick)).map((u) => u.serverId));
+      if (nick && (knownOn.size === 0 || serverWord)) {
+        for (const s of connectedServers(servers, activeServer, serverWord)) {
+          if (sameNick(nick, s.nick) || knownOn.has(s.id)) continue;
           result.items.push({
-            id: `dm-new-${q}`,
-            label: `Message ${q}`,
+            id: `dm-new-${s.id}:${nick}`,
+            label: `Message ${nick}`,
             labelColor: theme.accentAlt,
-            detail: `new DM, ${activeServer.name}`,
-            onSelect: () => onOpenDm(activeServer.id, q),
+            detail: `new DM, ${s.name}`,
+            onSelect: () => onOpenDm(s.id, nick),
           });
         }
       }
@@ -448,86 +628,27 @@ export function Omnibox({
     // Default (or #) -- quick open buffers across all servers
     const channelOnly = trimmed.startsWith("#");
     const q = trimmed;
-    // "#" alone ranks like an empty query: what needs you first, the current buffer last.
-    const browsing = !q || q === "#";
-    const candidates: { item: OmniboxItem; score: number }[] = [];
-
-    for (const s of servers) {
-      for (const bufName of s.bufferOrder) {
-        const buf = s.buffers[bufName];
-        if (!buf) continue;
-        if (channelOnly && buf.kind !== "channel") continue;
-
-        const key = `${s.id}:${bufName}`;
-        const displayName = bufferDisplayName(buf);
-        const baseScore = fuzzyScore(q, `${displayName} ${s.name}`);
-        if (baseScore < 0) continue;
-
-        // Boost mentions, unreads, and recently visited buffers when browsing
-        let boost = 0;
-        if (browsing) {
-          if (buf.hasMention) boost += 400;
-          else if (buf.unread > 0) boost += 200 + Math.min(buf.unread, 50);
-          const recIdx = recentKeys.indexOf(key);
-          if (recIdx !== -1) boost += 100 - recIdx;
-          // The buffer you are in goes last, so Ctrl+K then Enter goes back to the previous one.
-          if (active?.serverId === s.id && active.buffer === bufName) boost -= 10_000;
-        }
-
-        candidates.push({
-          score: baseScore + boost,
-          item: {
-            id: `buf-${key}`,
-            label: displayName,
-            labelColor:
-              buf.kind === "channel"
-                ? theme.fgBright
-                : buf.kind === "dm"
-                  ? theme.accentAlt
-                  : theme.fgMuted,
-            detail: s.name,
-            badge: buf.unread > 0 ? unreadBadge(buf.unread) : undefined,
-            badgeColor: buf.hasMention ? theme.red : theme.accent,
-            onSelect: () => onSelectBuffer(s.id, bufName),
-          },
-        });
-      }
-    }
-
-    candidates.sort((a, b) => b.score - a.score);
-    const found = candidates.map((x) => x.item);
-
-    // A typed name that is a user, not a buffer: offer a DM with them, after the buffers.
-    if (!channelOnly && q && !q.includes(" ")) {
-      const lower = q.toLowerCase();
-      for (const u of collectUsers(servers)) {
-        if (u.hasDm || !u.nick.toLowerCase().includes(lower)) continue;
-        found.push({
-          id: `user-${u.serverId}:${u.nick.toLowerCase()}`,
-          label: `@${u.nick}`,
-          labelColor: nickColor(u.nick),
-          detail: `user, ${u.serverName}`,
-          onSelect: () => onOpenDm(u.serverId, u.nick),
-        });
-      }
-    }
-    const result = top(found);
+    const result = top(
+      quickOpenRows(q, { servers, active, recentKeys, onSelectBuffer, onOpenDm }),
+    );
 
     // "theme" or "color" typed: offer the theme list, after the buffers.
     if (!channelOnly && q.length >= 3 && "color theme".includes(q.toLowerCase())) {
       result.items.push(themeAction("theme-open"));
     }
 
-    // If user typed #newchannel not yet joined, offer to join it
-    if (channelOnly && q.length > 1 && !q.includes(" ") && activeServer) {
-      const alreadyJoined = activeServer.bufferOrder.some((b) => sameNick(b, q));
-      if (!alreadyJoined) {
+    // "#name" not joined yet: offer to join it, on each connected server that is not in
+    // it, the active one first. "#rust beta" picks the server.
+    const [chan = "", serverWord = ""] = q.split(/\s+/);
+    if (channelOnly && chan.length > 1) {
+      for (const s of connectedServers(servers, activeServer, serverWord)) {
+        if (s.bufferOrder.some((b) => sameNick(b, chan))) continue;
         result.items.push({
-          id: `join-${q}`,
-          label: `+ Join ${q}`,
+          id: `join-${s.id}:${chan}`,
+          label: `+ Join ${chan}`,
           labelColor: theme.green,
-          detail: activeServer.name,
-          onSelect: () => onRunCommand(`/join ${q}`),
+          detail: s.name,
+          onSelect: () => onRunCommandOn(s.id, `/join ${chan}`),
         });
       }
     }
@@ -545,9 +666,11 @@ export function Omnibox({
     active,
     activeServer,
     recentKeys,
+    recentActions,
     onSelectBuffer,
     onOpenDm,
     onRunCommand,
+    onRunCommandOn,
     onToggleSidebar,
     onToggleNicklist,
   ]);
@@ -615,6 +738,7 @@ export function Omnibox({
   const rowWidth = modalWidth - 5;
 
   const select = (item: OmniboxItem | undefined) => {
+    if (item?.historyKey) onActionUsed(item.historyKey);
     item?.onSelect();
     if (!item?.keepOpen) onClose();
   };
@@ -699,10 +823,13 @@ export function Omnibox({
                   <span fg={isSel ? theme.accent : theme.bgOverlay}>
                     {isSel ? "▎" : " "}
                   </span>
-                  <span fg={item.labelColor ?? theme.fgPrimary}>
-                    {" "}
-                    {isSel ? <strong>{label}</strong> : label}
-                  </span>
+                  <span fg={item.labelColor ?? theme.fgPrimary}> </span>
+                  {/* The characters the query matched stand out, as in VS Code and fzf. */}
+                  {highlightRuns(label, item.label.length, item.highlights).map((run, i) => (
+                    <span key={i} fg={run.hit ? theme.orange : (item.labelColor ?? theme.fgPrimary)}>
+                      {isSel || run.hit ? <strong>{run.text}</strong> : run.text}
+                    </span>
+                  ))}
                 </text>
 
                 <text>

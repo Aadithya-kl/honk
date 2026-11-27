@@ -8,6 +8,7 @@ import { Notifier } from "./notify.ts";
 import { chooseNotificationProtocol, parseNotificationSetting, readTmuxInfo } from "./notifyProtocol.ts";
 import { applyTheme } from "./theme.ts";
 import { allThemes, loadUserThemes, selectTheme, type ThemeEntry } from "./themes/index.ts";
+import { defaultStatePath, loadState, saveState } from "./state.ts";
 import { startUpdateCheck } from "./updateCheck.ts";
 import { runUpgrade } from "./upgrade.ts";
 import { versionLine } from "./version.ts";
@@ -40,6 +41,9 @@ interface HotState {
   /** The theme in use. Kept here so a hot reload, which resets src/theme.ts, keeps it. */
   themeId: string;
   saveTheme: (id: string) => void;
+  /** The omnibox actions used last (see state.ts), kept here across hot reloads too. */
+  recentActions: Record<string, number>;
+  saveRecentActions: (recent: Record<string, number>) => void;
 }
 
 const g = globalThis as unknown as { __ircHot?: HotState };
@@ -127,6 +131,21 @@ if (!g.__ircHot) {
       manager.addAppNotice(`could not save the theme in ${path}: ${(err as Error).message}`);
     }
   };
+  // The actions used last, saved after each use. Writes go one after another, and a
+  // failure is said once in *status: honk works the same without the file.
+  const statePath = defaultStatePath();
+  let stateWrites = Promise.resolve();
+  let stateWarned = false;
+  const saveRecentActions = (recent: Record<string, number>) => {
+    hot.recentActions = recent;
+    stateWrites = stateWrites
+      .then(() => saveState(statePath, { recentActions: recent }))
+      .catch((err: Error) => {
+        if (stateWarned) return;
+        stateWarned = true;
+        manager.addAppNotice(`could not save recent actions in ${statePath}: ${err.message}`);
+      });
+  };
   const hot: HotState = {
     renderer,
     root,
@@ -135,6 +154,8 @@ if (!g.__ircHot) {
     themes,
     themeId: selected.entry.id,
     saveTheme,
+    recentActions: loadState(statePath).recentActions,
+    saveRecentActions,
   };
   g.__ircHot = hot;
 }
@@ -149,6 +170,8 @@ hot.root.render(
     themes={hot.themes}
     initialThemeId={hot.themeId}
     onThemeChosen={hot.saveTheme}
+    initialRecentActions={hot.recentActions}
+    onRecentActionsChanged={hot.saveRecentActions}
   />,
 );
 hot.renderer.requestRender();

@@ -3,9 +3,10 @@ import {
   useRenderer,
   useTerminalDimensions,
 } from "@opentui/react";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { IrcManager } from "./irc/manager.ts";
 import { STATUS_BUFFER } from "./irc/names.ts";
+import { withActionUsed } from "./state.ts";
 import { applyTheme, theme, ThemeVersion } from "./theme.ts";
 import type { ThemeEntry } from "./themes/index.ts";
 import { ChatPane } from "./ui/ChatPane.tsx";
@@ -26,9 +27,20 @@ interface AppProps {
   initialThemeId: string;
   /** Called when the user keeps a theme in the picker, to save it. */
   onThemeChosen: (id: string) => void;
+  /** The omnibox actions used last, from state.ts. */
+  initialRecentActions: Record<string, number>;
+  /** Called after an action is used, to save the new order. */
+  onRecentActionsChanged: (recent: Record<string, number>) => void;
 }
 
-export function App({ manager, themes, initialThemeId, onThemeChosen }: AppProps) {
+export function App({
+  manager,
+  themes,
+  initialThemeId,
+  onThemeChosen,
+  initialRecentActions,
+  onRecentActionsChanged,
+}: AppProps) {
   const renderer = useRenderer();
   const { width } = useTerminalDimensions();
   const snapshot = useSyncExternalStore(manager.subscribe, manager.getSnapshot);
@@ -39,6 +51,18 @@ export function App({ manager, themes, initialThemeId, onThemeChosen }: AppProps
   const [recentKeys, setRecentKeys] = useState<string[]>([]);
   const [themeId, setThemeId] = useState(initialThemeId);
   const [themeVersion, setThemeVersion] = useState(0);
+  const [recentActions, setRecentActions] = useState(initialRecentActions);
+  // The latest value, so two actions used before a re-render both count.
+  const recentActionsRef = useRef(initialRecentActions);
+  const actionUsed = useCallback(
+    (key: string) => {
+      const next = withActionUsed(recentActionsRef.current, key);
+      recentActionsRef.current = next;
+      setRecentActions(next);
+      onRecentActionsChanged(next);
+    },
+    [onRecentActionsChanged],
+  );
 
   // Copies the colors into the shared `theme` object, then re-renders. The
   // version tells memoized components to render again too.
@@ -76,6 +100,12 @@ export function App({ manager, themes, initialThemeId, onThemeChosen }: AppProps
   const submit = useCallback(
     (value: string) => {
       if (manager.handleInput(value) === "quit") quit();
+    },
+    [manager, quit],
+  );
+  const runCommandOn = useCallback(
+    (serverId: string, command: string) => {
+      if (manager.runCommandOn(serverId, command) === "quit") quit();
     },
     [manager, quit],
   );
@@ -203,12 +233,15 @@ export function App({ manager, themes, initialThemeId, onThemeChosen }: AppProps
             onSelectBuffer={selectBuffer}
             onOpenDm={openDm}
             onRunCommand={submit}
+            onRunCommandOn={runCommandOn}
             onToggleSidebar={toggleSidebar}
             onToggleNicklist={toggleNicklist}
             themes={themes}
             themeId={themeId}
             onPreviewTheme={previewTheme}
             onChooseTheme={chooseTheme}
+            recentActions={recentActions}
+            onActionUsed={actionUsed}
           />
         )}
       </box>

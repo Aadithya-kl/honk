@@ -2337,21 +2337,34 @@ export class IrcManager {
     return true;
   }
 
-  private handleCommand(line: string): "quit" | void {
+  /**
+   * Runs a slash command ("/join #x", "/connect") on a server that may not be the active
+   * one, as if typed in its *status. The omnibox uses it for rows such as "Join #x on beta".
+   * Replies go to the buffer you are in, named after the server, so you see them.
+   */
+  runCommandOn(serverId: string, line: string): "quit" | void {
+    if (!this.servers.has(serverId) || !line.startsWith("/")) return;
+    return this.handleCommand(line.slice(1), { serverId, buffer: STATUS_BUFFER });
+  }
+
+  private handleCommand(line: string, on?: ActiveBuffer): "quit" | void {
     const spaceIdx = line.indexOf(" ");
     const cmd = (spaceIdx === -1 ? line : line.slice(0, spaceIdx)).toLowerCase();
     const rest = spaceIdx === -1 ? "" : line.slice(spaceIdx + 1).trim();
     const args = rest ? rest.split(/\s+/) : [];
 
-    const activeServerId = this.active?.serverId;
-    const activeBuffer = this.active?.buffer ?? STATUS_BUFFER;
+    const target = on ?? this.active;
+    const activeServerId = target?.serverId;
+    const activeBuffer = target?.buffer ?? STATUS_BUFFER;
     const server = activeServerId ? this.servers.get(activeServerId) : undefined;
     const client = activeServerId ? this.clients.get(activeServerId) : undefined;
+    // A command for another server answers in the buffer you are in, not in its *status.
+    const elsewhere = Boolean(on && this.active && on.serverId !== this.active.serverId);
 
     const reply = (text: string, kind: MessageKind = "system") => {
-      if (activeServerId) {
-        this.pushMessage(activeServerId, activeBuffer, makeMessage(kind, text));
-      }
+      if (!activeServerId) return;
+      if (elsewhere) this.showInActiveFrom(activeServerId, kind, text);
+      else this.pushMessage(activeServerId, activeBuffer, makeMessage(kind, text));
     };
 
     if (server && this.demoServers.has(server.id)) {
