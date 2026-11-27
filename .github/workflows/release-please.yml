@@ -1,0 +1,34 @@
+# Keeps one release PR open, "chore(main): release X.Y.Z", with the next version
+# and its CHANGELOG.md section, built from the commit messages (see AGENTS.md).
+# Merging that PR makes the tag and the GitHub release.
+#
+# It uses the default GITHUB_TOKEN, so the tag it makes does not start other
+# workflows (GitHub's rule against loops), and the release PR gets no CI runs.
+name: release-please
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# Two pushes close together must not both edit the release PR.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Update the release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the release PR's branch; tag and release after it is merged
+      pull-requests: write # open and update the release PR
+      issues: write # label the release PR ("autorelease: pending")
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          # For now, only the release PR: no tag and no release, since nothing
+          # builds the binaries for them yet.
+          skip-github-release: true

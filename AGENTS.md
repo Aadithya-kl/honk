@@ -60,5 +60,6 @@ CI checks the subjects. Check them before a push with
 
 ## Releases
 
-Releases happen only when the user asks for one. Until then, the `version` in
-package.json, git tags, and CHANGELOG.md stay as they are.
+release-please owns the `version` in package.json, the git tags, and
+CHANGELOG.md. It keeps a release PR open; the user merges it to release.
+Changes go in commit messages, which release-please turns into the changelog.
