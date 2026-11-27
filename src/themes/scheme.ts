@@ -13,7 +13,9 @@
 // - The gray text slots (base03, base04) and the bright text (base06, base07)
 //   are used only when they are readable and really gray.
 // - The accent slots (base08 red, ..., base0E magenta) keep their hue, but one
-//   below 3:1 on base00 is moved toward the bright text until it reaches 3:1.
+//   below 3:1 on any background that text is drawn on (the chat, the panels,
+//   selected and hovered rows) is moved toward the bright text until it
+//   reaches 3:1 on all of them. Muted text is moved the same way to 2:1.
 // There is no hue check: Gruvbox's yellow-green "green" or Rose Pine's teal
 // cannot be told apart from a mistake.
 
@@ -68,8 +70,10 @@ const HEX = /^#[0-9a-fA-F]{6}$/;
 
 /** WCAG level for normal text. A scheme whose base05 on base00 is below this is rejected. */
 export const MIN_TEXT_CONTRAST = 4.5;
-/** Accent colors are moved toward the bright text until they reach this. */
+/** Accent colors are moved toward the bright text until they reach this on every background. */
 export const MIN_ACCENT_CONTRAST = 3;
+/** Muted text (timestamps, hints) is moved toward the text color until it reaches this on every background. */
+export const MIN_MUTED_CONTRAST = 2;
 /** A row under the mouse has at least this contrast with its normal background. */
 export const MIN_HOVER_CONTRAST = 1.04;
 /** A selected row (active channel, omnibox) has at least this contrast with the other rows, so it stays stronger than hover. */
@@ -147,11 +151,11 @@ export function schemeToTheme(scheme: Scheme): Theme {
   // theme. The footer gets the same color, so it does not blend with the
   // input bar above it, which is lighter still.
   if (contrast(darker, bg) < MIN_PANEL_CONTRAST) {
-    darker = stepUntil(bg, fg, bg, RAISED_PANEL_CONTRAST);
+    darker = stepUntil(bg, fg, [bg], RAISED_PANEL_CONTRAST);
     darkest = darker;
     // The input bar sits right above the footer: keep it a visible step
     // lighter (Tokyo Night's input bar is 1.12:1 on the chat).
-    input = stepUntil(bg, fg, bg, 1.12);
+    input = stepUntil(bg, fg, [bg], 1.12);
   }
   // The selection background, softened when it is far from base00 (solarized
   // puts a strong gray there).
@@ -169,7 +173,8 @@ export function schemeToTheme(scheme: Scheme): Theme {
       ? color
       : mix(fg, bg, fade);
   const fgSecondary = grayText(p.base04, 3, 0.25);
-  const fgMuted = grayText(p.base03, 2, 0.5);
+  // Borders and fgDim are made from this gray; fgMuted itself is adjusted below.
+  const muted = grayText(p.base03, 2, 0.5);
 
   // The brightest gray among base05..base07 (in catppuccin-latte, base06 and
   // base07 are accents; in rose-pine-dawn, base07 is a background).
@@ -179,19 +184,9 @@ export function schemeToTheme(scheme: Scheme): Theme {
     fg,
   );
 
-  // Accents are used as text (channel names, notices, links), so they must
-  // be readable.
-  const readable = (color: string) => stepUntil(color, fgBright, bg, MIN_ACCENT_CONTRAST);
-
-  const accents = [
-    p.base08, p.base09, p.base0A, p.base0B, p.base0C, p.base0D, p.base0E,
-    p.base12, p.base13, p.base14, p.base15, p.base16, p.base17,
-  ];
-  const nickPalette = [
-    ...new Set(accents.filter((c): c is string => c !== undefined && contrast(c, bg) >= 3)),
-  ];
-
-  return {
+  // Every background that text is drawn on. The text colors below are
+  // checked against all of them.
+  const backgrounds = {
     bgBase: bg,
     bgSidebar: darker,
     bgNicklist: darker,
@@ -205,14 +200,36 @@ export function schemeToTheme(scheme: Scheme): Theme {
     bgRowHover: hoverColor(darker, activeRow, fg),
     bgActiveRowHover: hoverColor(activeRow, activeRow, fg),
     bgOverlayHover: hoverColor(overlay, overlaySel, fg),
-    borderOverlay: mix(bg, fgMuted, 0.6),
-    gutter: mix(bg, fgMuted, 0.6),
+  };
+  const surfaces = Object.values(backgrounds);
+
+  // Accents are used as text (channel names, notices, links), so they must
+  // be readable.
+  const readable = (color: string) => stepUntil(color, fgBright, surfaces, MIN_ACCENT_CONTRAST);
+  const fgMuted = stepUntil(muted, fg, surfaces, MIN_MUTED_CONTRAST);
+
+  const accents = [
+    p.base08, p.base09, p.base0A, p.base0B, p.base0C, p.base0D, p.base0E,
+    p.base12, p.base13, p.base14, p.base15, p.base16, p.base17,
+  ];
+  // Nicks are drawn on the same backgrounds as accents (mention rows, the
+  // nicklist, the omnibox), so they get the same adjustment.
+  const nickPalette = [
+    ...new Set(
+      accents.filter((c): c is string => c !== undefined && contrast(c, bg) >= 3).map(readable),
+    ),
+  ];
+
+  return {
+    ...backgrounds,
+    borderOverlay: mix(bg, muted, 0.6),
+    gutter: mix(bg, muted, 0.6),
 
     fgPrimary: fg,
     fgBright,
     fgSecondary,
     fgMuted,
-    fgDim: mix(fgMuted, bg, 0.35),
+    fgDim: mix(muted, bg, 0.35),
 
     accent: readable(p.base0D!),
     accentAlt: readable(p.base0E!),
@@ -259,13 +276,18 @@ function luminance(hex: string): number {
 
 /**
  * Mixes `from` toward `to` in small steps, and returns the first color whose
- * contrast with `bg` is at least `target`. Returns `from` if it is already
- * there, and `to` if no step reaches it.
+ * contrast with each of `backgrounds` is at least `target`.
+ * Returns `from` if it is already there, and `to` if no step reaches it.
  */
-export function stepUntil(from: string, to: string, bg: string, target: number): string {
+export function stepUntil(
+  from: string,
+  to: string,
+  backgrounds: readonly string[],
+  target: number,
+): string {
   for (let i = 0; i <= 100; i++) {
     const color = mix(from, to, i / 100);
-    if (contrast(color, bg) >= target) return color;
+    if (backgrounds.every((b) => contrast(color, b) >= target)) return color;
   }
   return to;
 }
