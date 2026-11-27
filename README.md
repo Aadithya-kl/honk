@@ -140,6 +140,35 @@ Flags: `--server host[:port]`, `--port`, `--nick`, `--channel` (can repeat),
 `--version` (or `-v`), `--help` (or `-h`).
 TLS is on by default. Type `/help` inside the client for the commands.
 
+### Keys
+
+| Key | What it does |
+|---|---|
+| Ctrl+K | Open or close the omnibox: switch buffers, join channels, run actions |
+| Ctrl+B | Show or hide the sidebar |
+| Alt+U | Show or hide the user list |
+| Alt+Up, Alt+Down | Go to the previous or next buffer |
+| Tab, Shift+Tab | Complete a nick or channel name, and cycle through the matches |
+| Up, Down, Ctrl+P, Ctrl+N | Walk through the lines you sent |
+| PageUp, PageDown | Scroll the chat by half a screen |
+| Shift+Up, Shift+Down | Scroll the chat by three lines |
+| Ctrl+C | Quit |
+
+In the omnibox, Up and Down (or Ctrl+P and Ctrl+N) move the selection, Enter
+runs it, and Esc closes the omnibox.
+
+On macOS, the Option key types characters by default instead of acting as Alt,
+so Alt+U may not reach honk. Two ways around it:
+
+- Open the omnibox and pick "View: Toggle User List".
+- Make Option act as Alt in your terminal: "Use Option as Meta key" in
+  Terminal.app (Settings > Profiles > Keyboard), "Esc+" for the Option key in
+  iTerm2 (Settings > Profiles > Keys), or `macos-option-as-alt = true` in
+  Ghostty.
+
+In Ghostty, Alt+Up and Alt+Down work without this, because Option with an
+arrow key types no character.
+
 ### What honk does not do yet
 
 - Run on Windows.
