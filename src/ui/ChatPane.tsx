@@ -4,7 +4,8 @@ import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { isUserSender, sameNick, STATUS_BUFFER } from "../irc/names.ts";
 import { nickColor, theme, useThemeVersion } from "../theme.ts";
 import type { BufferState, ChatMessage, ServerState } from "../types.ts";
-import { Clickable, isPlainClick } from "./Clickable.tsx";
+import { linkOpener } from "../openUrl.ts";
+import { Clickable, isPlainClick, LinkArea } from "./Clickable.tsx";
 import { getCompletions } from "./completion.ts";
 import { cellWidth, HEADER_HEIGHT, scrollboxStyle, truncate } from "./display.ts";
 import { FormattedText, LinkedText } from "./format.tsx";
@@ -19,7 +20,12 @@ interface ChatPaneProps {
   onPasteLines: (lines: string[]) => void;
   /** A click on a sender's nick: open a DM with them, as in the nick list. */
   onSelectUser: (nick: string) => void;
+  /** A plain click on a link in a message or the topic. Opens it in the browser by default. */
+  onOpenLink?: (href: string) => void;
 }
+
+/** Undefined over SSH and on platforms honk cannot open a browser on. */
+const openLink = linkOpener();
 
 const NICK_COL_WIDTH = 12;
 /** Time (5), a space, then the nick column. The message body starts after this. */
@@ -250,6 +256,7 @@ export function ChatPane({
   onSubmit,
   onPasteLines,
   onSelectUser,
+  onOpenLink = openLink,
 }: ChatPaneProps) {
   const inputRef = useRef<InputRenderable>(null);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
@@ -396,12 +403,12 @@ export function ChatPane({
 
   const title = buffer ? buffer.name : STATUS_BUFFER;
   // Cut at the end to fit beside the title and the user count (2 + 2 padding,
-  // " — ", and the count with its margin). The digits of a color code count as
-  // cells, so a coloured topic may be cut a little early.
+  // " — ", and the count with its margin). FormattedText cuts it after it
+  // parses it, so a cut link still opens the whole URL.
   const usersText = buffer?.kind === "channel" ? `${buffer.users.length} users` : "";
   const topicRoom =
     paneWidth - 4 - cellWidth(title) - 3 - (usersText ? cellWidth(usersText) + 2 : 0);
-  const topic = topicRoom >= 4 ? truncate(buffer?.topic ?? "", topicRoom) : "";
+  const topic = topicRoom >= 4 ? (buffer?.topic ?? "") : "";
   const promptLabel = server
     ? `${server.name}/${title}`
     : title;
@@ -432,7 +439,9 @@ export function ChatPane({
   };
 
   return (
-    <box
+    // Links anywhere in the pane open with a click: the topic and the messages.
+    <LinkArea
+      onOpenLink={onOpenLink}
       flexDirection="column"
       flexGrow={1}
       height="100%"
@@ -456,7 +465,7 @@ export function ChatPane({
           {topic ? (
             <>
               <span fg={theme.fgMuted}> — </span>
-              <FormattedText text={topic} defaultFg={theme.fgMuted} />
+              <FormattedText text={topic} defaultFg={theme.fgMuted} maxWidth={topicRoom} />
             </>
           ) : null}
         </text>
@@ -554,6 +563,6 @@ export function ChatPane({
           onSubmit={handleSubmit}
         />
       </box>
-    </box>
+    </LinkArea>
   );
 }

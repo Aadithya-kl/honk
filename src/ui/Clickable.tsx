@@ -1,6 +1,6 @@
 import type { CliRenderer, MouseEvent, MousePointerStyle } from "@opentui/core";
 import { useRenderer, type BoxProps } from "@opentui/react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /**
  * Decides the mouse pointer from how many clickable elements are under the
@@ -90,6 +90,26 @@ export function isPlainClick(renderer: CliRenderer, event: MouseEvent): boolean 
   return selection?.isStart === true && selection.behavior === "cell";
 }
 
+/**
+ * Shows the hand pointer while `hovered` is true. `clear` sets it back to
+ * false on the renderer's "blur".
+ */
+function usePointer(hovered: boolean, clear: (hovered: false) => void): void {
+  const renderer = useRenderer();
+  useEffect(() => {
+    if (!hovered) return;
+    const { tracker, rows } = hoverFor(renderer);
+    const clearRow = () => clear(false);
+    rows.add(clearRow);
+    tracker.enter();
+    // Also runs when the box goes away while the mouse is over it.
+    return () => {
+      rows.delete(clearRow);
+      tracker.leave();
+    };
+  }, [hovered, renderer, clear]);
+}
+
 type ClickableProps = Omit<BoxProps, "onMouseOver" | "onMouseOut" | "onMouseMove" | "children"> & {
   /** The background under the mouse, from the theme. Leave it out to keep `backgroundColor`, as for the selected row. */
   hoverColor?: string;
@@ -104,23 +124,10 @@ type ClickableProps = Omit<BoxProps, "onMouseOver" | "onMouseOut" | "onMouseMove
  * nothing on a click (your own nick), so it gets no hover look.
  */
 export function Clickable({ hoverColor, children, ...props }: ClickableProps) {
-  const renderer = useRenderer();
   const [mouseOver, setMouseOver] = useState(false);
   const hovered =
     mouseOver && (props.onMouseDown !== undefined || props.onMouseUp !== undefined);
-
-  useEffect(() => {
-    if (!hovered) return;
-    const { tracker, rows } = hoverFor(renderer);
-    const clear = () => setMouseOver(false);
-    rows.add(clear);
-    tracker.enter();
-    // Also runs when the box goes away while the mouse is over it.
-    return () => {
-      rows.delete(clear);
-      tracker.leave();
-    };
-  }, [hovered, renderer]);
+  usePointer(hovered, setMouseOver);
 
   return (
     <box
@@ -135,6 +142,111 @@ export function Clickable({ hoverColor, children, ...props }: ClickableProps) {
       onMouseMove={() => setMouseOver(true)}
     >
       {typeof children === "function" ? children(hovered) : children}
+    </box>
+  );
+}
+
+/** A click this soon after the terminal window got focus may be the click that focused it. */
+const FOCUS_CLICK_MS = 500;
+/** How long a click on a link waits for a second click, which makes it a double-click. */
+const DOUBLE_CLICK_MS = 250;
+
+type LinkAreaProps = Omit<
+  BoxProps,
+  "onMouseOver" | "onMouseOut" | "onMouseMove" | "onMouseDown" | "onMouseUp"
+> & {
+  /** Opens a link. Without it (over SSH), links get no hand pointer and a click is left to the terminal. */
+  onOpenLink: ((href: string) => void) | undefined;
+  /** How long a click waits for a second one. The tests make it short. */
+  doubleClickMs?: number;
+};
+
+/**
+ * A box whose links (the `<a href>` in its text) open with a plain click,
+ * and show the hand pointer under the mouse. The terminal draws the links
+ * itself (OSC 8), so the box asks the renderer which link is at the mouse:
+ * that also finds both lines of a link that wraps.
+ *
+ * A drag across a link still selects text, and Shift, Alt, or Ctrl with a
+ * click leaves the link to the terminal (Cmd+click in most of them).
+ *
+ * The links come from other people, so a click opens one only when it is
+ * clearly meant for it:
+ *
+ * - The same link is under the mouse at press and at release. New lines can
+ *   scroll the feed in between, and someone flooding links could otherwise
+ *   slide their link under a click that started on plain text.
+ * - The terminal window did not just get focus: some terminals pass the click
+ *   that focuses the window on to honk.
+ * - It is not the first half of a double-click. People double-click a link to
+ *   select it, often to look at it before they trust it. So a click waits
+ *   DOUBLE_CLICK_MS, and a second press in that time cancels the open.
+ *
+ * The pointer is checked only when the mouse moves. After a wheel scroll or a
+ * new line under a still mouse, it is updated on the next move.
+ */
+export function LinkArea({
+  onOpenLink,
+  doubleClickMs = DOUBLE_CLICK_MS,
+  children,
+  ...props
+}: LinkAreaProps) {
+  const renderer = useRenderer();
+  const [overLink, setOverLink] = useState(false);
+  usePointer(overLink, setOverLink);
+
+  // The link under the mouse when the button went down.
+  const pressedLink = useRef<string | null>(null);
+  // When the window last got focus; never, until it does.
+  const focusedAt = useRef(Number.NEGATIVE_INFINITY);
+  // The open that waits to see whether a second click comes.
+  const pendingOpen = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cancelOpen = () => {
+    clearTimeout(pendingOpen.current);
+    pendingOpen.current = undefined;
+  };
+  // A link must not open after the pane is gone.
+  useEffect(() => cancelOpen, []);
+
+  useEffect(() => {
+    const onFocus = () => {
+      focusedAt.current = performance.now();
+    };
+    renderer.on("focus", onFocus);
+    return () => {
+      renderer.off("focus", onFocus);
+    };
+  }, [renderer]);
+
+  // Only whether there is a link: the id is enough, without copying its URL.
+  const check = (event: MouseEvent) =>
+    setOverLink(onOpenLink !== undefined && renderer.getLinkIdAt(event.x, event.y) !== 0);
+
+  return (
+    <box
+      {...props}
+      // Mouse events bubble up from the text inside, like in the DOM. Moving
+      // from one text to the next fires "out" then "over"; both land in one render.
+      onMouseOver={check}
+      onMouseMove={check}
+      onMouseOut={() => setOverLink(false)}
+      onMouseDown={(event) => {
+        cancelOpen();
+        pressedLink.current = renderer.getLinkAt(event.x, event.y);
+      }}
+      onMouseUp={(event) => {
+        const pressed = pressedLink.current;
+        pressedLink.current = null;
+        if (!onOpenLink || !pressed || !isPlainClick(renderer, event)) return;
+        if (performance.now() - focusedAt.current < FOCUS_CLICK_MS) return;
+        if (renderer.getLinkAt(event.x, event.y) !== pressed) return;
+        pendingOpen.current = setTimeout(() => {
+          pendingOpen.current = undefined;
+          onOpenLink(pressed);
+        }, doubleClickMs);
+      }}
+    >
+      {children}
     </box>
   );
 }

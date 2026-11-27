@@ -1,5 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 import { theme, useThemeVersion } from "../theme.ts";
+import { safeLinkUrl } from "../openUrl.ts";
+import { cellWidth, truncate } from "./display.ts";
 
 // Standard mIRC 0-15 colors (tuned slightly for dark TrueColor backgrounds)
 const IRC_COLORS_16: readonly string[] = [
@@ -93,14 +95,13 @@ function splitSegmentUrls(seg: FormattedSegment): FormattedSegment[] {
       out.push({ ...seg, text: seg.text.slice(lastIdx, match.index) });
     }
     const { url, trailing } = trimUrlTrailingPunct(match[0]);
-    if (url) {
-      out.push({
-        ...seg,
-        text: url,
-        href: url,
-        underline: true,
-        fg: seg.fg ?? theme.cyan,
-      });
+    const href = url ? safeLinkUrl(url) : undefined;
+    if (href) {
+      // Always the link color on the normal background: the sender's colors
+      // could make a link invisible, so that a click on "empty" space opens it.
+      out.push({ ...seg, text: url, href, underline: true, fg: theme.cyan, bg: undefined });
+    } else if (url) {
+      out.push({ ...seg, text: url });
     }
     if (trailing) {
       out.push({ ...seg, text: trailing });
@@ -119,7 +120,7 @@ function splitSegmentUrls(seg: FormattedSegment): FormattedSegment[] {
  * Parses mIRC formatting codes (\x02 bold, \x1D italic, \x1F underline,
  * \x16 reverse, \x03 color, \x04 hex color, \x0F reset) and splits out URLs.
  */
-function parseIrcText(input: string): FormattedSegment[] {
+export function parseIrcText(input: string): FormattedSegment[] {
   const rawSegments: FormattedSegment[] = [];
   let bold = false;
   let italic = false;
@@ -226,20 +227,58 @@ function parseIrcText(input: string): FormattedSegment[] {
   return finalSegments;
 }
 
+/**
+ * Cuts the shown text of `segments` to at most `max` terminal cells, with "…"
+ * at the end when it cuts. A link that is cut stops being a link.
+ */
+export function truncateSegments(segments: FormattedSegment[], max: number): FormattedSegment[] {
+  const total = segments.reduce((sum, seg) => sum + cellWidth(seg.text), 0);
+  if (total <= max) return segments;
+  const out: FormattedSegment[] = [];
+  let room = max;
+  for (const seg of segments) {
+    const width = cellWidth(seg.text);
+    // The last segment that fits must leave one cell for the "…".
+    if (width < room) {
+      out.push(seg);
+      room -= width;
+      continue;
+    }
+    // More text follows, so this segment must end in "…". The extra space makes
+    // truncate() cut even when the segment alone fills the room exactly.
+    const cut = { ...seg, text: truncate(`${seg.text} `, room) };
+    // A cut link is not a link: "https://github.com…" could hide the real host,
+    // as in "https://github.com.evil.example/".
+    if (cut.href) {
+      delete cut.href;
+      delete cut.underline;
+    }
+    out.push(cut);
+    break;
+  }
+  return out;
+}
+
 interface FormattedTextProps {
   text: string;
   defaultFg?: string;
   forceItalic?: boolean;
+  /** Cut the text to this many terminal cells, after the formatting codes are removed. */
+  maxWidth?: number;
 }
 
 export function FormattedText({
   text,
   defaultFg = theme.fgPrimary,
   forceItalic = false,
+  maxWidth,
 }: FormattedTextProps) {
   // Links get theme.cyan while parsing, so parse again when the theme changes.
   const themeVersion = useThemeVersion();
-  const segments = useMemo(() => parseIrcText(text), [text, themeVersion]);
+  const segments = useMemo(() => {
+    const parsed = parseIrcText(text);
+    return maxWidth === undefined ? parsed : truncateSegments(parsed, maxWidth);
+  }, [text, themeVersion, maxWidth]);
   return <Segments segments={segments} defaultFg={defaultFg} forceItalic={forceItalic} />;
 }
 
@@ -278,7 +317,9 @@ function Segments({
 
         if (seg.href) {
           return (
-            <a key={idx} href={seg.href} fg={seg.fg ?? theme.cyan} bg={seg.bg}>
+            // Keyed by the URL too: OpenTUI reads `href` only when it creates
+            // the link, so a reused <a> would show new text but open the old URL.
+            <a key={`${idx}:${seg.href}`} href={seg.href} fg={seg.fg ?? theme.cyan} bg={seg.bg}>
               {node}
             </a>
           );

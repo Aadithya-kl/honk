@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
-import { act } from "react";
+import { act, useState } from "react";
 import type { BufferState, ChatMessage } from "../types.ts";
 import { ChatPane } from "./ChatPane.tsx";
 
@@ -14,8 +14,15 @@ function message(i: number): ChatMessage {
   };
 }
 
-/** Renders a ChatPane for `buffer` (a #honk channel by default) and returns the screen lines. */
-async function renderLines(buffer: Partial<BufferState>, width = 60): Promise<string[]> {
+/**
+ * Renders a ChatPane for `buffer` (a #honk channel by default). Call `destroy`
+ * when done: it unmounts the React tree, which is a state update.
+ */
+async function renderPane(
+  buffer: Partial<BufferState>,
+  width = 60,
+  onOpenLink?: (href: string) => void,
+) {
   const full: BufferState = {
     name: "#honk",
     kind: "channel",
@@ -26,7 +33,7 @@ async function renderLines(buffer: Partial<BufferState>, width = 60): Promise<st
     hasMention: false,
     ...buffer,
   };
-  const { renderOnce, captureCharFrame, renderer } = await testRender(
+  const { renderOnce, captureCharFrame, mockMouse, renderer } = await testRender(
     <ChatPane
       server={undefined}
       buffer={full}
@@ -35,16 +42,25 @@ async function renderLines(buffer: Partial<BufferState>, width = 60): Promise<st
       onSubmit={() => {}}
       onPasteLines={() => {}}
       onSelectUser={() => {}}
+      onOpenLink={onOpenLink}
     />,
     { width, height: 24 },
   );
+  const destroy = () => act(() => renderer.destroy());
   try {
     await renderOnce();
-    return captureCharFrame().split("\n");
-  } finally {
-    // Destroying the renderer unmounts the React tree, which is a state update.
-    act(() => renderer.destroy());
+  } catch (error) {
+    destroy();
+    throw error;
   }
+  return { screen: captureCharFrame().split("\n"), mockMouse, destroy };
+}
+
+/** Renders a ChatPane for `buffer` and returns the screen lines. */
+async function renderLines(buffer: Partial<BufferState>, width = 60): Promise<string[]> {
+  const { screen, destroy } = await renderPane(buffer, width);
+  destroy();
+  return screen;
 }
 
 // 60 messages overflow the feed, so the scrollbar takes one column.
@@ -96,4 +112,99 @@ test("a wide channel name and topic fit the header", async () => {
   expect(screen.find((line) => line.includes("#日本語"))).toBe(
     "  #日本語 — 日本語のチャンネルへようこそ。ルール…  0 users  ",
   );
+});
+
+test("a click opens a link in a message and in the topic", async () => {
+  const opened: string[] = [];
+  const { screen, mockMouse, destroy } = await renderPane(
+    {
+      topic: "docs at https://honk.example/docs",
+      messages: [{ ...message(0), text: "see https://example.com/x for more" }],
+    },
+    80,
+    (href) => opened.push(href),
+  );
+  try {
+    const at = (text: string) => {
+      const y = screen.findIndex((line) => line.includes(text));
+      return { x: screen[y]!.indexOf(text) + 2, y };
+    };
+    const topic = at("https://honk.example/docs");
+    const body = at("https://example.com/x");
+    // Each click waits for a possible second click before it opens the link.
+    await act(() => mockMouse.click(topic.x, topic.y));
+    await Bun.sleep(400);
+    await act(() => mockMouse.click(body.x, body.y));
+    await Bun.sleep(400);
+    expect(opened).toEqual(["https://honk.example/docs", "https://example.com/x"]);
+  } finally {
+    destroy();
+  }
+});
+
+test("a topic link that is cut to fit is not a link", async () => {
+  // "https://github.com…" must not open https://github.com.evil.example/.
+  const opened: string[] = [];
+  const { screen, mockMouse, destroy } = await renderPane(
+    { topic: "docs at https://github.com.evil.example/login" },
+    48,
+    (href) => opened.push(href),
+  );
+  try {
+    const y = screen.findIndex((line) => line.includes("https://"));
+    expect(screen[y]).toContain("https://github.com…");
+    await act(() => mockMouse.click(screen[y]!.indexOf("https://") + 2, y));
+    await Bun.sleep(400);
+    expect(opened).toEqual([]);
+  } finally {
+    destroy();
+  }
+});
+
+test("after the topic changes, a click opens the link it shows now", async () => {
+  // OpenTUI reads a link's URL only when it creates it, so a reused link kept the old one.
+  const opened: string[] = [];
+  let setTopic: (topic: string) => void = () => {};
+  function Pane() {
+    const [topic, set] = useState("docs: https://evil.example/phish");
+    setTopic = set;
+    const buffer: BufferState = {
+      name: "#honk",
+      kind: "channel",
+      topic,
+      messages: [],
+      users: [],
+      unread: 0,
+      hasMention: false,
+    };
+    return (
+      <ChatPane
+        server={undefined}
+        buffer={buffer}
+        inputFocused={false}
+        paneWidth={80}
+        onSubmit={() => {}}
+        onPasteLines={() => {}}
+        onSelectUser={() => {}}
+        onOpenLink={(href) => opened.push(href)}
+      />
+    );
+  }
+  const { renderOnce, captureCharFrame, mockMouse, renderer } = await testRender(<Pane />, {
+    width: 80,
+    height: 12,
+  });
+  try {
+    await renderOnce();
+    await act(async () => setTopic("docs: https://github.com/agustingianni/honk"));
+    await renderOnce();
+    const screen = captureCharFrame().split("\n");
+    // A few cells into the URL, which starts after "docs: ".
+    const y = screen.findIndex((line) => line.includes("docs: "));
+    await act(() => mockMouse.click(screen[y]!.indexOf("docs: ") + 9, y));
+    await Bun.sleep(400);
+    expect(opened).toEqual(["https://github.com/agustingianni/honk"]);
+  } finally {
+    act(() => renderer.destroy());
+  }
 });
